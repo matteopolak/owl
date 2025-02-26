@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(stuff)
+
+set(CMAKE_CXX_STANDARD 20)
+
+find_package(fmt CONFIG REQUIRED)
+find_package(LLVM CONFIG REQUIRED)
+
+include_directories(${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(llvm_libs core support passes analysis)
+
+set(SOURCES
+	src/main.cpp
+	src/token.cpp
+)
+
+include_directories(src)
+
+add_executable(stuff ${SOURCES})
+
+target_link_libraries(stuff PRIVATE fmt::fmt)
+target_link_libraries(stuff PRIVATE ${llvm_libs})
