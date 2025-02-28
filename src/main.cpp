@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string_view>
 
+#include "parser.h"
 #include "tokenizer.h"
 
 int main() {
@@ -37,6 +38,22 @@ int main() {
 											 span.end.column, part);
 					},
 					token);
+		}
+
+		Parser p(tokens);
+
+		auto nodes = p.collect();
+
+		for (Node &node : nodes) {
+			std::visit(
+					[&](auto &&arg) {
+						Span span = arg.span();
+						std::string_view part = span.of(source);
+
+						fmt::print("({}:{} to {}:{}) CONTENT: '{}'\n", span.start.line,
+											 span.start.column, span.end.line, span.end.column, part);
+					},
+					node);
 		}
 	} catch (std::runtime_error &e) {
 		fmt::print("error: {}\n", e.what());

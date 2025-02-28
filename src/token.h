@@ -8,17 +8,6 @@
 #include "basic_tokenizer.h"
 #include "span.h"
 
-class TokenEof;
-class TokenIdent;
-class TokenLit;
-class TokenOp;
-class TokenDelim;
-class TokenKeyword;
-class TokenComment;
-
-using Token = std::variant<TokenEof, TokenIdent, TokenLit, TokenOp, TokenDelim,
-													 TokenKeyword, TokenComment>;
-
 namespace token {
 bool isDelimiter(char c);
 }
@@ -31,7 +20,7 @@ public:
 	Span span() { return span_; }
 
 protected:
-	std::string type();
+	static std::string type();
 
 	Span span_;
 };
@@ -40,7 +29,7 @@ class TokenEof : public BaseToken {
 public:
 	TokenEof(Span span);
 
-	std::string type() { return "eof"; }
+	static std::string type() { return "eof"; }
 };
 
 class TokenIdent : public BaseToken {
@@ -48,7 +37,7 @@ public:
 	TokenIdent(Span span, std::string value);
 
 	std::string &value() { return value_; }
-	std::string type() { return "ident"; }
+	static std::string type() { return "ident"; }
 
 	static std::optional<TokenIdent> parse(BasicTokenizer &t) {
 		std::string value;
@@ -77,7 +66,7 @@ class TokenLit : public BaseToken {
 public:
 	TokenLit(Span span, TokenLitType value);
 
-	std::string type() { return "lit"; }
+	static std::string type() { return "lit"; }
 
 	static std::optional<TokenLit> parse(BasicTokenizer &t) {
 		if (auto lit = parseStringLit(t)) {
@@ -179,9 +168,11 @@ enum Op {
 
 class TokenOp : public BaseToken {
 public:
+	Op op;
+
 	TokenOp(Span span, Op op);
 
-	std::string type() { return "op"; }
+	static std::string type() { return "op"; }
 
 	static std::optional<TokenOp> parse(BasicTokenizer &t) {
 		Op op;
@@ -228,9 +219,6 @@ public:
 					 c == '^' || c == '&' || c == '|' || c == '!' || c == '=' ||
 					 c == '<' || c == '>';
 	}
-
-private:
-	Op op;
 };
 
 enum Delim {
@@ -243,14 +231,25 @@ enum Delim {
 	COMMA,
 	SEMICOLON,
 	LANGLE,
-	RANGLE
+	RANGLE,
+	COLON,
+	// not parsed, is created by the tokenizer
+	COLON_COLON
 };
 
 class TokenDelim : public BaseToken {
 public:
+	Delim delim;
+
 	TokenDelim(Span span, Delim delim);
 
-	std::string type() { return "delim"; }
+	static std::string type() { return "delim"; }
+
+	void expect(Delim d) {
+		if (delim != d) {
+			throw std::runtime_error("unexpected token");
+		}
+	}
 
 	static std::optional<TokenDelim> parse(BasicTokenizer &t) {
 		Delim delim;
@@ -290,22 +289,47 @@ public:
 			return LANGLE;
 		} else if (c == '>') {
 			return RANGLE;
+		} else if (c == ':') {
+			return COLON;
 		} else {
 			return std::nullopt;
 		}
 	}
-
-private:
-	Delim delim;
 };
 
-enum Keyword { FN, LET, IF, ELSE, WHILE, FOR, RETURN };
+enum Keyword {
+	FN,
+	LET,
+	IF,
+	ELSE,
+	WHILE,
+	FOR,
+	LOOP,
+	BREAK,
+	CONTINUE,
+	RETURN,
+	STRUCT,
+	INTERFACE,
+	IMPLEMENT,
+	IMPORT,
+	EXPORT,
+	EXTERN,
+	CONST
+};
 
 class TokenKeyword : public BaseToken {
 public:
+	Keyword keyword;
+
 	TokenKeyword(Span span, Keyword keyword);
 
-	std::string type() { return "keyword"; }
+	static std::string type() { return "keyword"; }
+
+	void expect(Keyword k) {
+		if (keyword != k) {
+			throw std::runtime_error("unexpected token");
+		}
+	}
 
 	static std::optional<TokenKeyword> tryFrom(TokenIdent &ident) {
 		std::string v = ident.value();
@@ -325,29 +349,45 @@ public:
 			keyword = FOR;
 		} else if (v == "return") {
 			keyword = RETURN;
+		} else if (v == "struct") {
+			keyword = STRUCT;
+		} else if (v == "interface") {
+			keyword = INTERFACE;
+		} else if (v == "implement") {
+			keyword = IMPLEMENT;
+		} else if (v == "import") {
+			keyword = IMPORT;
+		} else if (v == "export") {
+			keyword = EXPORT;
+		} else if (v == "extern") {
+			keyword = EXTERN;
+		} else if (v == "const") {
+			keyword = CONST;
+		} else if (v == "break") {
+			keyword = BREAK;
+		} else if (v == "continue") {
+			keyword = CONTINUE;
+		} else if (v == "loop") {
+			keyword = LOOP;
 		} else {
 			return std::nullopt;
 		}
 
 		return TokenKeyword(ident.span(), keyword);
 	}
-
-private:
-	Keyword keyword;
 };
 
 class TokenComment : public BaseToken {
 public:
 	TokenComment(Span span, std::string value);
 
-	std::string type() { return "comment"; }
+	static std::string type() { return "comment"; }
 
 	static std::optional<TokenComment> parse(BasicTokenizer &t) {
 		if (!t.tryConsume("//")) {
 			return std::nullopt;
 		}
 
-		// parse until end of line
 		std::string value;
 
 		do {
@@ -366,3 +406,6 @@ public:
 private:
 	std::string value;
 };
+
+using Token = std::variant<TokenEof, TokenIdent, TokenLit, TokenOp, TokenDelim,
+													 TokenKeyword, TokenComment>;

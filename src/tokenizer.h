@@ -21,6 +21,25 @@ public:
 		for (;;) {
 			try {
 				auto token = next();
+
+				if (std::holds_alternative<TokenDelim>(token) &&
+						std::get<TokenDelim>(token).delim == Delim::COLON) {
+					auto t = std::get<TokenDelim>(token);
+					auto nextToken = next();
+
+					if (std::holds_alternative<TokenDelim>(nextToken) &&
+							std::get<TokenDelim>(nextToken).delim == Delim::COLON) {
+						auto nextT = std::get<TokenDelim>(nextToken);
+						tokens.push_back(
+								TokenDelim(t.span().merge(nextT.span()), Delim::COLON_COLON));
+						continue;
+					} else {
+						tokens.push_back(token);
+						tokens.push_back(nextToken);
+						continue;
+					}
+				}
+
 				tokens.push_back(token);
 
 				if (std::holds_alternative<TokenEof>(token)) {
@@ -52,9 +71,9 @@ private:
 		}
 
 		// comment
-		if (auto comment = TokenComment::parse(*this)) {
-			return *comment;
-		}
+		// if (auto comment = TokenComment::parse(*this)) {
+		// 	return *comment;
+		// }
 
 		// op
 		if (auto op = TokenOp::parse(*this)) {

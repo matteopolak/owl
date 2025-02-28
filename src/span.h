@@ -18,6 +18,8 @@ class Span {
 public:
 	Span(Position start, Position end) : start(start), end(end) {}
 
+	Span merge(Span other) { return {start, other.end}; }
+
 	std::string_view of(std::string_view source) {
 		return source.substr(start.index, end.index - start.index);
 	}
