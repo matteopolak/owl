@@ -23,12 +23,12 @@ public:
 				auto token = next();
 
 				if (std::holds_alternative<TokenDelim>(token) &&
-						std::get<TokenDelim>(token).delim == Delim::COLON) {
+						std::get<TokenDelim>(token).variant == Delim::COLON) {
 					auto t = std::get<TokenDelim>(token);
 					auto nextToken = next();
 
 					if (std::holds_alternative<TokenDelim>(nextToken) &&
-							std::get<TokenDelim>(nextToken).delim == Delim::COLON) {
+							std::get<TokenDelim>(nextToken).variant == Delim::COLON) {
 						auto nextT = std::get<TokenDelim>(nextToken);
 						tokens.push_back(
 								TokenDelim(t.span().merge(nextT.span()), Delim::COLON_COLON));

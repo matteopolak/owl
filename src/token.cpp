@@ -11,13 +11,13 @@ TokenIdent::TokenIdent(Span span, std::string value)
 TokenLit::TokenLit(Span span, TokenLitType value)
 		: BaseToken(span), value(value) {}
 
-TokenOp::TokenOp(Span span, Op op) : BaseToken(span), op(op) {}
+TokenOp::TokenOp(Span span, Op op) : BaseToken(span), variant(op) {}
 
 TokenDelim::TokenDelim(Span span, Delim delim)
-		: BaseToken(span), delim(delim) {}
+		: BaseToken(span), variant(delim) {}
 
 TokenKeyword::TokenKeyword(Span span, Keyword keyword)
-		: BaseToken(span), keyword(keyword) {}
+		: BaseToken(span), variant(keyword) {}
 
 TokenComment::TokenComment(Span span, std::string value)
 		: BaseToken(span), value(value) {}

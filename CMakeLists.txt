@@ -17,6 +17,8 @@ set(SOURCES
 )
 
 include_directories(src)
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
 
 add_executable(stuff ${SOURCES})
 

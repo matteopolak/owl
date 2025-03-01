@@ -1,3 +1,11 @@
 fn main() {
 	stuff();
 }
+
+import hello::world;
+
+struct hello {
+	stuff: u32,
+	hello: i32,
+}
+

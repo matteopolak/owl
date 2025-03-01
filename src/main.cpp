@@ -44,7 +44,7 @@ int main() {
 
 		auto nodes = p.collect();
 
-		for (Node &node : nodes) {
+		for (Hir &node : nodes) {
 			std::visit(
 					[&](auto &&arg) {
 						Span span = arg.span();

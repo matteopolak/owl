@@ -17,11 +17,10 @@ public:
 	BaseToken(Span span) : span_(span) {}
 	BaseToken() = delete;
 
-	Span span() { return span_; }
+	Span span() const { return span_; }
+	std::string type() const;
 
 protected:
-	static std::string type();
-
 	Span span_;
 };
 
@@ -37,7 +36,7 @@ public:
 	TokenIdent(Span span, std::string value);
 
 	std::string &value() { return value_; }
-	static std::string type() { return "ident"; }
+	std::string type() const { return fmt::format("ident({})", value_); }
 
 	static std::optional<TokenIdent> parse(BasicTokenizer &t) {
 		std::string value;
@@ -66,7 +65,7 @@ class TokenLit : public BaseToken {
 public:
 	TokenLit(Span span, TokenLitType value);
 
-	static std::string type() { return "lit"; }
+	std::string type() const { return "lit"; }
 
 	static std::optional<TokenLit> parse(BasicTokenizer &t) {
 		if (auto lit = parseStringLit(t)) {
@@ -148,7 +147,7 @@ private:
 	TokenLitType value;
 };
 
-enum Op {
+enum class Op {
 	ADD,
 	SUB,
 	MUL,
@@ -158,6 +157,7 @@ enum Op {
 	AND,
 	OR,
 	NOT,
+	EQEQ,
 	EQ,
 	NEQ,
 	LT,
@@ -168,45 +168,47 @@ enum Op {
 
 class TokenOp : public BaseToken {
 public:
-	Op op;
+	Op variant;
 
 	TokenOp(Span span, Op op);
 
-	static std::string type() { return "op"; }
+	std::string type() const { return "op"; }
 
 	static std::optional<TokenOp> parse(BasicTokenizer &t) {
 		Op op;
 
 		if (t.tryConsume("+")) {
-			op = ADD;
+			op = Op::ADD;
 		} else if (t.tryConsume("-")) {
-			op = SUB;
+			op = Op::SUB;
 		} else if (t.tryConsume("*")) {
-			op = MUL;
+			op = Op::MUL;
 		} else if (t.tryConsume("/")) {
-			op = DIV;
+			op = Op::DIV;
 		} else if (t.tryConsume("%")) {
-			op = MOD;
+			op = Op::MOD;
 		} else if (t.tryConsume("^")) {
-			op = POW;
+			op = Op::POW;
 		} else if (t.tryConsume("&&")) {
-			op = AND;
+			op = Op::AND;
 		} else if (t.tryConsume("||")) {
-			op = OR;
+			op = Op::OR;
 		} else if (t.tryConsume("!")) {
-			op = NOT;
+			op = Op::NOT;
 		} else if (t.tryConsume("==")) {
-			op = EQ;
+			op = Op::EQEQ;
+		} else if (t.tryConsume("=")) {
+			op = Op::EQ;
 		} else if (t.tryConsume("!=")) {
-			op = NEQ;
+			op = Op::NEQ;
 		} else if (t.tryConsume("<")) {
-			op = LT;
+			op = Op::LT;
 		} else if (t.tryConsume(">")) {
-			op = GT;
+			op = Op::GT;
 		} else if (t.tryConsume("<=")) {
-			op = LTE;
+			op = Op::LTE;
 		} else if (t.tryConsume(">=")) {
-			op = GTE;
+			op = Op::GTE;
 		} else {
 			return std::nullopt;
 		}
@@ -219,9 +221,55 @@ public:
 					 c == '^' || c == '&' || c == '|' || c == '!' || c == '=' ||
 					 c == '<' || c == '>';
 	}
+
+	static std::string str(Op op) {
+		switch (op) {
+		case Op::ADD:
+			return "+";
+		case Op::SUB:
+			return "-";
+		case Op::MUL:
+			return "*";
+		case Op::DIV:
+			return "/";
+		case Op::MOD:
+			return "%";
+		case Op::POW:
+			return "^";
+		case Op::AND:
+			return "&&";
+		case Op::OR:
+			return "||";
+		case Op::NOT:
+			return "!";
+		case Op::EQEQ:
+			return "==";
+		case Op::EQ:
+			return "=";
+		case Op::NEQ:
+			return "!=";
+		case Op::LT:
+			return "<";
+		case Op::GT:
+			return ">";
+		case Op::LTE:
+			return "<=";
+		case Op::GTE:
+			return ">=";
+		}
+	}
 };
 
-enum Delim {
+template <> class fmt::formatter<Op> {
+public:
+	constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+
+	template <typename Context> auto format(const Op &op, Context &ctx) const {
+		return format_to(ctx.out(), "{}", TokenOp::str(op));
+	}
+};
+
+enum class Delim {
 	LPAREN,
 	RPAREN,
 	LBRACE,
@@ -239,17 +287,11 @@ enum Delim {
 
 class TokenDelim : public BaseToken {
 public:
-	Delim delim;
+	Delim variant;
 
 	TokenDelim(Span span, Delim delim);
 
-	static std::string type() { return "delim"; }
-
-	void expect(Delim d) {
-		if (delim != d) {
-			throw std::runtime_error("unexpected token");
-		}
-	}
+	std::string type() const { return "delim"; }
 
 	static std::optional<TokenDelim> parse(BasicTokenizer &t) {
 		Delim delim;
@@ -270,34 +312,72 @@ public:
 
 	static std::optional<Delim> tryDelimFrom(char c) {
 		if (c == '(') {
-			return LPAREN;
+			return Delim::LPAREN;
 		} else if (c == ')') {
-			return RPAREN;
+			return Delim::RPAREN;
 		} else if (c == '{') {
-			return LBRACE;
+			return Delim::LBRACE;
 		} else if (c == '}') {
-			return RBRACE;
+			return Delim::RBRACE;
 		} else if (c == '[') {
-			return LBRACKET;
+			return Delim::LBRACKET;
 		} else if (c == ']') {
-			return RBRACKET;
+			return Delim::RBRACKET;
 		} else if (c == ',') {
-			return COMMA;
+			return Delim::COMMA;
 		} else if (c == ';') {
-			return SEMICOLON;
+			return Delim::SEMICOLON;
 		} else if (c == '<') {
-			return LANGLE;
+			return Delim::LANGLE;
 		} else if (c == '>') {
-			return RANGLE;
+			return Delim::RANGLE;
 		} else if (c == ':') {
-			return COLON;
+			return Delim::COLON;
 		} else {
 			return std::nullopt;
 		}
 	}
+
+	static std::string str(Delim d) {
+		switch (d) {
+		case Delim::LPAREN:
+			return "(";
+		case Delim::RPAREN:
+			return ")";
+		case Delim::LBRACE:
+			return "{";
+		case Delim::RBRACE:
+			return "}";
+		case Delim::LBRACKET:
+			return "[";
+		case Delim::RBRACKET:
+			return "]";
+		case Delim::COMMA:
+			return ",";
+		case Delim::SEMICOLON:
+			return ";";
+		case Delim::LANGLE:
+			return "<";
+		case Delim::RANGLE:
+			return ">";
+		case Delim::COLON:
+			return ":";
+		case Delim::COLON_COLON:
+			return "::";
+		}
+	}
 };
 
-enum Keyword {
+template <> class fmt::formatter<Delim> {
+public:
+	constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+
+	template <typename Context> auto format(const Delim &d, Context &ctx) const {
+		return format_to(ctx.out(), "{}", TokenDelim::str(d));
+	}
+};
+
+enum class Keyword {
 	FN,
 	LET,
 	IF,
@@ -319,61 +399,104 @@ enum Keyword {
 
 class TokenKeyword : public BaseToken {
 public:
-	Keyword keyword;
+	Keyword variant;
 
 	TokenKeyword(Span span, Keyword keyword);
 
-	static std::string type() { return "keyword"; }
-
-	void expect(Keyword k) {
-		if (keyword != k) {
-			throw std::runtime_error("unexpected token");
-		}
-	}
+	std::string type() const { return "keyword"; }
 
 	static std::optional<TokenKeyword> tryFrom(TokenIdent &ident) {
 		std::string v = ident.value();
 		Keyword keyword;
 
 		if (v == "fn") {
-			keyword = FN;
+			keyword = Keyword::FN;
 		} else if (v == "let") {
-			keyword = LET;
+			keyword = Keyword::LET;
 		} else if (v == "if") {
-			keyword = IF;
+			keyword = Keyword::IF;
 		} else if (v == "else") {
-			keyword = ELSE;
+			keyword = Keyword::ELSE;
 		} else if (v == "while") {
-			keyword = WHILE;
+			keyword = Keyword::WHILE;
 		} else if (v == "for") {
-			keyword = FOR;
+			keyword = Keyword::FOR;
 		} else if (v == "return") {
-			keyword = RETURN;
+			keyword = Keyword::RETURN;
 		} else if (v == "struct") {
-			keyword = STRUCT;
+			keyword = Keyword::STRUCT;
 		} else if (v == "interface") {
-			keyword = INTERFACE;
+			keyword = Keyword::INTERFACE;
 		} else if (v == "implement") {
-			keyword = IMPLEMENT;
+			keyword = Keyword::IMPLEMENT;
 		} else if (v == "import") {
-			keyword = IMPORT;
+			keyword = Keyword::IMPORT;
 		} else if (v == "export") {
-			keyword = EXPORT;
+			keyword = Keyword::EXPORT;
 		} else if (v == "extern") {
-			keyword = EXTERN;
+			keyword = Keyword::EXTERN;
 		} else if (v == "const") {
-			keyword = CONST;
+			keyword = Keyword::CONST;
 		} else if (v == "break") {
-			keyword = BREAK;
+			keyword = Keyword::BREAK;
 		} else if (v == "continue") {
-			keyword = CONTINUE;
+			keyword = Keyword::CONTINUE;
 		} else if (v == "loop") {
-			keyword = LOOP;
+			keyword = Keyword::LOOP;
 		} else {
 			return std::nullopt;
 		}
 
 		return TokenKeyword(ident.span(), keyword);
+	}
+
+	static std::string str(Keyword k) {
+		switch (k) {
+		case Keyword::FN:
+			return "fn";
+		case Keyword::LET:
+			return "let";
+		case Keyword::IF:
+			return "if";
+		case Keyword::ELSE:
+			return "else";
+		case Keyword::WHILE:
+			return "while";
+		case Keyword::FOR:
+			return "for";
+		case Keyword::LOOP:
+			return "loop";
+		case Keyword::BREAK:
+			return "break";
+		case Keyword::CONTINUE:
+			return "continue";
+		case Keyword::RETURN:
+			return "return";
+		case Keyword::STRUCT:
+			return "struct";
+		case Keyword::INTERFACE:
+			return "interface";
+		case Keyword::IMPLEMENT:
+			return "implement";
+		case Keyword::IMPORT:
+			return "import";
+		case Keyword::EXPORT:
+			return "export";
+		case Keyword::EXTERN:
+			return "extern";
+		case Keyword::CONST:
+			return "const";
+		}
+	}
+};
+
+template <> class fmt::formatter<Keyword> {
+public:
+	constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+
+	template <typename Context>
+	auto format(const Keyword &k, Context &ctx) const {
+		return format_to(ctx.out(), "{}", TokenKeyword::str(k));
 	}
 };
 
@@ -381,7 +504,7 @@ class TokenComment : public BaseToken {
 public:
 	TokenComment(Span span, std::string value);
 
-	static std::string type() { return "comment"; }
+	std::string type() const { return "comment"; }
 
 	static std::optional<TokenComment> parse(BasicTokenizer &t) {
 		if (!t.tryConsume("//")) {
@@ -409,3 +532,14 @@ private:
 
 using Token = std::variant<TokenEof, TokenIdent, TokenLit, TokenOp, TokenDelim,
 													 TokenKeyword, TokenComment>;
+
+template <> class fmt::formatter<Token> {
+public:
+	constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+
+	template <typename Context> auto format(const Token &t, Context &ctx) {
+		std::string &type = std::visit([](auto &&arg) { return arg.type(); }, t);
+
+		return format_to(ctx.out(), "{}", type);
+	}
+};
