@@ -17,6 +17,7 @@ public:
 class Span {
 public:
 	Span(Position start, Position end) : start(start), end(end) {}
+	Span() = default;
 
 	Span merge(Span other) { return {start, other.end}; }
 

@@ -57,6 +57,18 @@ public:
 	}
 
 	std::string value_;
+
+	// ==
+	bool operator==(const TokenIdent &other) const {
+		return value_ == other.value_;
+	}
+
+	// hash
+	std::size_t hash() const { return std::hash<std::string>{}(value_); }
+};
+
+template <> struct std::hash<TokenIdent> {
+	std::size_t operator()(const TokenIdent &token) const { return token.hash(); }
 };
 
 using TokenLitType = std::variant<int, double, std::string>;
@@ -65,6 +77,7 @@ class TokenLit : public BaseToken {
 public:
 	TokenLit(Span span, TokenLitType value);
 
+	TokenLitType value;
 	std::string type() const { return "lit"; }
 
 	static std::optional<TokenLit> parse(BasicTokenizer &t) {
@@ -143,8 +156,6 @@ private:
 			return TokenLit(t.endSpan(), std::stoi(value));
 		}
 	}
-
-	TokenLitType value;
 };
 
 enum class Op {
@@ -163,7 +174,11 @@ enum class Op {
 	LT,
 	GT,
 	LTE,
-	GTE
+	GTE,
+
+	// not parsed, used by the parser
+	LPAREN,
+	RPAREN
 };
 
 class TokenOp : public BaseToken {
@@ -173,6 +188,36 @@ public:
 	TokenOp(Span span, Op op);
 
 	std::string type() const { return "op"; }
+
+	int precedence() {
+		switch (variant) {
+		case Op::OR:
+			return 1;
+		case Op::AND:
+			return 2;
+		case Op::EQEQ:
+		case Op::NEQ:
+			return 3;
+		case Op::LT:
+		case Op::GT:
+		case Op::LTE:
+		case Op::GTE:
+			return 4;
+		case Op::ADD:
+		case Op::SUB:
+			return 5;
+		case Op::MUL:
+		case Op::DIV:
+		case Op::MOD:
+			return 6;
+		case Op::POW:
+			return 7;
+		case Op::NOT:
+			return 8;
+		default:
+			return 0;
+		}
+	}
 
 	static std::optional<TokenOp> parse(BasicTokenizer &t) {
 		Op op;
@@ -256,6 +301,12 @@ public:
 			return "<=";
 		case Op::GTE:
 			return ">=";
+		case Op::LPAREN:
+			return "(";
+		case Op::RPAREN:
+			return ")";
+		default:
+			throw std::runtime_error("not implemented");
 		}
 	}
 };
@@ -291,7 +342,7 @@ public:
 
 	TokenDelim(Span span, Delim delim);
 
-	std::string type() const { return "delim"; }
+	std::string type() const { return fmt::format("delim({})", str(variant)); }
 
 	static std::optional<TokenDelim> parse(BasicTokenizer &t) {
 		Delim delim;
@@ -364,6 +415,8 @@ public:
 			return ":";
 		case Delim::COLON_COLON:
 			return "::";
+		default:
+			throw std::runtime_error("not implemented");
 		}
 	}
 };
@@ -394,7 +447,8 @@ enum class Keyword {
 	IMPORT,
 	EXPORT,
 	EXTERN,
-	CONST
+	CONST,
+	SUPER
 };
 
 class TokenKeyword : public BaseToken {
@@ -403,7 +457,7 @@ public:
 
 	TokenKeyword(Span span, Keyword keyword);
 
-	std::string type() const { return "keyword"; }
+	std::string type() const { return fmt::format("keyword({})", str(variant)); }
 
 	static std::optional<TokenKeyword> tryFrom(TokenIdent &ident) {
 		std::string v = ident.value();
@@ -443,6 +497,8 @@ public:
 			keyword = Keyword::CONTINUE;
 		} else if (v == "loop") {
 			keyword = Keyword::LOOP;
+		} else if (v == "super") {
+			keyword = Keyword::SUPER;
 		} else {
 			return std::nullopt;
 		}
@@ -486,6 +542,10 @@ public:
 			return "extern";
 		case Keyword::CONST:
 			return "const";
+		case Keyword::SUPER:
+			return "super";
+		default:
+			throw std::runtime_error("not implemented");
 		}
 	}
 };

@@ -63,6 +63,7 @@ private:
 		try {
 			return T::parse(*this);
 		} catch (std::runtime_error &e) {
+			fmt::println("tryParse main: {}", e.what());
 			return std::nullopt;
 		}
 	}

@@ -17,8 +17,8 @@ public:
 	void commit() { rollback = false; }
 
 private:
-	std::size_t index;
 	BasicParser &parser;
+	std::size_t index;
 	bool rollback = true;
 };
 
@@ -125,8 +125,18 @@ public:
 		try {
 			return consume<T>(args...);
 		} catch (std::runtime_error &e) {
+			fmt::println("tryConsume: {}", e.what());
+
 			return std::nullopt;
 		}
+	}
+
+	std::optional<Token> peek() {
+		if (index >= tokens.size()) {
+			return std::nullopt;
+		}
+
+		return get(index);
 	}
 
 	template <typename T, typename... Args> std::optional<T> peek(Args... args) {
@@ -134,6 +144,20 @@ public:
 
 		if (token) {
 			--index;
+		}
+
+		return token;
+	}
+
+	template <typename T, typename... Args> std::optional<T> peek2(Args... args) {
+		index++;
+
+		auto token = tryConsume<T>(args...);
+
+		if (token) {
+			index -= 2;
+		} else {
+			index--;
 		}
 
 		return token;

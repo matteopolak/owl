@@ -20,6 +20,9 @@ include_directories(src)
 add_compile_options(-fsanitize=address)
 add_link_options(-fsanitize=address)
 
+# all compiler warnings
+add_compile_options(-Wall -Wextra -Wpedantic)
+
 add_executable(stuff ${SOURCES})
 
 target_link_libraries(stuff PRIVATE fmt::fmt)

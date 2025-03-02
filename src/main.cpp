@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string_view>
 
+#include "mir.h"
 #include "parser.h"
 #include "tokenizer.h"
 
