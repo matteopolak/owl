@@ -43,9 +43,9 @@ int main() {
 
 		Parser p(tokens);
 
-		auto nodes = p.collect();
+		auto hir = p.collect();
 
-		for (Hir &node : nodes) {
+		for (Hir &node : hir) {
 			std::visit(
 					[&](auto &&arg) {
 						Span span = arg.span();
@@ -56,6 +56,10 @@ int main() {
 					},
 					node);
 		}
+
+		HirLowerer l(hir);
+
+		auto mir = l.lower();
 	} catch (std::runtime_error &e) {
 		fmt::print("error: {}\n", e.what());
 		return 1;
