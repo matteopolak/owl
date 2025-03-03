@@ -71,7 +71,7 @@ template <> struct std::hash<TokenIdent> {
 	std::size_t operator()(const TokenIdent &token) const { return token.hash(); }
 };
 
-using TokenLitType = std::variant<int, double, std::string>;
+using TokenLitType = std::variant<int, double, std::string, bool>;
 
 class TokenLit : public BaseToken {
 public:
@@ -90,6 +90,16 @@ public:
 		}
 
 		return std::nullopt;
+	}
+
+	static std::optional<TokenLit> tryFrom(TokenIdent ident) {
+		if (ident.value() == "true") {
+			return TokenLit(ident.span(), true);
+		} else if (ident.value() == "false") {
+			return TokenLit(ident.span(), false);
+		} else {
+			return std::nullopt;
+		}
 	}
 
 private:
@@ -176,6 +186,13 @@ enum class Op {
 	LTE,
 	GTE,
 
+	BIT_AND,
+	BIT_OR,
+	BIT_XOR,
+	BIT_NOT,
+	BIT_LSHIFT,
+	BIT_RSHIFT,
+
 	// not parsed, used by the parser
 	LPAREN,
 	RPAREN
@@ -197,6 +214,7 @@ public:
 			return 2;
 		case Op::EQEQ:
 		case Op::NEQ:
+		case Op::EQ:
 			return 3;
 		case Op::LT:
 		case Op::GT:
@@ -213,7 +231,17 @@ public:
 		case Op::POW:
 			return 7;
 		case Op::NOT:
+		case Op::BIT_NOT:
 			return 8;
+		case Op::BIT_AND:
+			return 9;
+		case Op::BIT_OR:
+			return 10;
+		case Op::BIT_XOR:
+			return 11;
+		case Op::BIT_LSHIFT:
+		case Op::BIT_RSHIFT:
+			return 12;
 		default:
 			return 0;
 		}
@@ -226,14 +254,26 @@ public:
 			op = Op::ADD;
 		} else if (t.tryConsume("-")) {
 			op = Op::SUB;
+		} else if (t.tryConsume("**")) {
+			op = Op::POW;
 		} else if (t.tryConsume("*")) {
 			op = Op::MUL;
 		} else if (t.tryConsume("/")) {
 			op = Op::DIV;
 		} else if (t.tryConsume("%")) {
 			op = Op::MOD;
+		} else if (t.tryConsume("&")) {
+			op = Op::BIT_AND;
+		} else if (t.tryConsume("|")) {
+			op = Op::BIT_OR;
 		} else if (t.tryConsume("^")) {
-			op = Op::POW;
+			op = Op::BIT_XOR;
+		} else if (t.tryConsume("~")) {
+			op = Op::BIT_NOT;
+		} else if (t.tryConsume("<<")) {
+			op = Op::BIT_LSHIFT;
+		} else if (t.tryConsume(">>")) {
+			op = Op::BIT_RSHIFT;
 		} else if (t.tryConsume("&&")) {
 			op = Op::AND;
 		} else if (t.tryConsume("||")) {
@@ -264,7 +304,7 @@ public:
 	static bool isOpStart(char c) {
 		return c == '+' || c == '-' || c == '*' || c == '/' || c == '%' ||
 					 c == '^' || c == '&' || c == '|' || c == '!' || c == '=' ||
-					 c == '<' || c == '>';
+					 c == '<' || c == '>' || c == '~';
 	}
 
 	static std::string str(Op op) {

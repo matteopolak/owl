@@ -42,7 +42,6 @@ public:
 			tx.commit();
 			return hir;
 		} catch (std::runtime_error &e) {
-			fmt::println("tryParse: {}", e.what());
 			return std::nullopt;
 		}
 	}
@@ -213,11 +212,8 @@ public:
 
 	static HirAssign parse(BasicParser &t) {
 		auto let = t.consume<TokenKeyword>(Keyword::LET);
-		fmt::print("let\n");
 		auto ident = HirTypedIdent::parse(t);
-		fmt::print("ident:\n");
 		auto eq = t.consume<TokenOp>(Op::EQ);
-		fmt::print("eq:\n");
 		auto expr = HirExpr::parse(t);
 
 		return HirAssign{let.span().merge(expr.span()), let, ident, eq,
@@ -232,7 +228,6 @@ public:
 			tx.commit();
 			return hir;
 		} catch (std::runtime_error &e) {
-			fmt::println("tryParse assign: {}", e.what());
 			return std::nullopt;
 		}
 	}
@@ -381,7 +376,6 @@ public:
 			tx.commit();
 			return hir;
 		} catch (std::runtime_error &e) {
-			fmt::println("tryParse stmt: {}", e.what());
 			return std::nullopt;
 		}
 	}
@@ -651,7 +645,6 @@ public:
 			tx.commit();
 			return hir;
 		} catch (std::runtime_error &e) {
-			fmt::println("tryParse for: {}", e.what());
 			return std::nullopt;
 		}
 	}

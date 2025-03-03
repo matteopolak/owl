@@ -1,9 +1,12 @@
 #include <filesystem>
-#include <fmt/core.h>
 #include <fstream>
 #include <sstream>
-#include <string_view>
 
+#include <fmt/core.h>
+#include <llvm/Pass.h>
+#include <llvm/Passes/OptimizationLevel.h>
+
+#include "llir.h"
 #include "mir.h"
 #include "parser.h"
 #include "tokenizer.h"
@@ -27,39 +30,16 @@ int main() {
 
 	try {
 		auto tokens = t.collect();
-
-		for (Token &token : tokens) {
-			std::visit(
-					[&](auto &&arg) {
-						Span span = arg.span();
-						std::string_view part = span.of(source);
-
-						fmt::print("{} ({}:{} to {}:{}) CONTENT: '{}'\n", arg.type(),
-											 span.start.line, span.start.column, span.end.line,
-											 span.end.column, part);
-					},
-					token);
-		}
-
 		Parser p(tokens);
 
 		auto hir = p.collect();
 
-		for (Hir &node : hir) {
-			std::visit(
-					[&](auto &&arg) {
-						Span span = arg.span();
-						std::string_view part = span.of(source);
+		HirLowerer mir(hir);
+		MirLowerer llir(mir);
 
-						fmt::print("({}:{} to {}:{}) CONTENT: '{}'\n", span.start.line,
-											 span.start.column, span.end.line, span.end.column, part);
-					},
-					node);
-		}
-
-		HirLowerer l(hir);
-
-		auto mir = l.lower();
+		llir.lower();
+		llir.module.print(llvm::errs(), nullptr);
+		llir.compile(llvm::OptimizationLevel::O3, llvm::ThinOrFullLTOPhase::None);
 	} catch (std::runtime_error &e) {
 		fmt::print("error: {}\n", e.what());
 		return 1;

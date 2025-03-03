@@ -125,8 +125,6 @@ public:
 		try {
 			return consume<T>(args...);
 		} catch (std::runtime_error &e) {
-			fmt::println("tryConsume: {}", e.what());
-
 			return std::nullopt;
 		}
 	}

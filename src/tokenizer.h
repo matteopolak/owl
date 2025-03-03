@@ -96,6 +96,10 @@ private:
 				return *keyword;
 			}
 
+			if (auto lit = TokenLit::tryFrom(*ident)) {
+				return *lit;
+			}
+
 			return *ident;
 		}
 

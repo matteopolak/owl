@@ -1,36 +1,665 @@
 #pragma once
 
-#include "hir.h"
-#include "module.h"
+#include <unordered_map>
+
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/CodeGen.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/TargetParser/Host.h>
 
-llvm::FunctionType *llvmType(HirFn &fn, Module &module,
-														 llvm::LLVMContext &context) {
-	std::vector<llvm::Type *> args;
+#include "mir.h"
+#include "token.h"
 
-	for (auto &arg : fn.params) {
-		if (auto type = arg.type) {
-			args.push_back(llvmType(*type, module));
+class LlScope {
+public:
+	LlScope(std::shared_ptr<LlScope> parent) : parent(parent) {}
+	LlScope(std::shared_ptr<LlScope> parent, llvm::Function *fn)
+			: fn(fn), parent(parent) {}
+
+	llvm::Function *fn = nullptr;
+
+	llvm::Type *get(MirIdent ident) {
+		if (auto it = variables.find(ident); it != variables.end()) {
+			return it->second;
+		}
+
+		if (parent) {
+			return parent->get(ident);
+		}
+
+		throw std::runtime_error("variable not found");
+	}
+
+	llvm::Function *getFn(MirPath path) {
+		if (auto it = functions.find(path); it != functions.end()) {
+			return it->second;
+		}
+
+		if (parent) {
+			return parent->getFn(path);
+		}
+
+		throw std::runtime_error("function not found");
+	}
+
+	void set(MirIdent ident, llvm::Type *value) { variables[ident] = value; }
+
+	void reassign(MirIdent ident, llvm::Value *value, llvm::BasicBlock *block) {
+		llvm::PHINode *phi = nullptr;
+
+		// Check if the variable already exists
+		if (auto it = variables.find(ident); it != variables.end()) {
+			phi = it->second;
+		} else if (parent) {
+			// If the variable exists in a parent scope, create a new PHINode in the
+			// current scope
+			phi = llvm::PHINode::Create(parent->get(ident)->getType(), 2,
+																	ident.value(), block);
+			phi->addIncoming(parent->get(ident), block);
+			variables[ident] = phi;
 		} else {
-			throw std::runtime_error("function argument has no type");
+			throw std::runtime_error("variable not found");
+		}
+
+		// Add the new incoming value
+		phi->addIncoming(value, block);
+	}
+
+	void setFn(MirPath path, llvm::Function *fn) { functions[path] = fn; }
+
+private:
+	std::shared_ptr<LlScope> parent;
+
+	std::unordered_map<MirIdent, llvm::Type *> variables;
+	std::unordered_map<MirPath, llvm::Function *> functions;
+};
+
+class LlTypeCtx {
+public:
+	LlTypeCtx(const TypeCtx &ty, llvm::LLVMContext &ctx, llvm::Module &module)
+			: ty(ty), ctx(ctx), dataLayout(module.getDataLayout()) {}
+
+	const TypeCtx &ty;
+
+	template <typename T> T *get(TypeHandle handle) {
+		if (auto it = types.find(handle); it != types.end()) {
+			return static_cast<T *>(it->second);
+		}
+
+		auto type =
+				std::visit([&](auto &&arg) { return get(arg); }, ty.get(handle).kind);
+
+		types[handle] = type;
+
+		return static_cast<T *>(type);
+	}
+
+	llvm::Type *get(TypeHandle handle) { return get<llvm::Type>(handle); }
+
+private:
+	llvm::LLVMContext &ctx;
+	llvm::DataLayout dataLayout;
+
+	std::unordered_map<TypeHandle, llvm::Type *> types;
+
+	llvm::Type *get(const MirTypeBuiltin &builtin) {
+		switch (builtin) {
+		case MirTypeBuiltin::Bool:
+			return llvm::Type::getInt1Ty(ctx);
+		case MirTypeBuiltin::Char:
+			return llvm::Type::getInt8Ty(ctx);
+		case MirTypeBuiltin::Uint8:
+			return llvm::Type::getInt8Ty(ctx);
+		case MirTypeBuiltin::Uint16:
+			return llvm::Type::getInt16Ty(ctx);
+		case MirTypeBuiltin::Uint32:
+			return llvm::Type::getInt32Ty(ctx);
+		case MirTypeBuiltin::Uint64:
+			return llvm::Type::getInt64Ty(ctx);
+		case MirTypeBuiltin::Usize:
+			return llvm::IntegerType::get(ctx, dataLayout.getPointerSizeInBits());
+		case MirTypeBuiltin::Int8:
+			return llvm::Type::getInt8Ty(ctx);
+		case MirTypeBuiltin::Int16:
+			return llvm::Type::getInt16Ty(ctx);
+		case MirTypeBuiltin::Int32:
+			return llvm::Type::getInt32Ty(ctx);
+		case MirTypeBuiltin::Int64:
+			return llvm::Type::getInt64Ty(ctx);
+		case MirTypeBuiltin::Isize:
+			return llvm::IntegerType::get(ctx, dataLayout.getPointerSizeInBits());
+		case MirTypeBuiltin::Float16:
+			return llvm::Type::getHalfTy(ctx);
+		case MirTypeBuiltin::Float32:
+			return llvm::Type::getFloatTy(ctx);
+		case MirTypeBuiltin::Float64:
+			return llvm::Type::getDoubleTy(ctx);
+		case MirTypeBuiltin::Void:
+			return llvm::Type::getVoidTy(ctx);
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Type *get(const MirStruct &str) {
+		std::vector<llvm::Type *> fields;
+
+		for (const MirStructField &field : str.fields) {
+			llvm::Type *type = get(field.type);
+			fields.push_back(type);
+		}
+
+		return llvm::StructType::create(ctx, fields, str.ident.value());
+	}
+
+	llvm::Type *get(const MirArray &array) {
+		llvm::Type *type = get(array.type);
+
+		return llvm::ArrayType::get(type, array.size);
+	}
+
+	llvm::Type *get(const std::shared_ptr<MirFn> &fn) {
+		std::vector<llvm::Type *> params;
+
+		for (auto &param : fn->params) {
+			llvm::Type *type = get(param.type);
+			params.push_back(type);
+		}
+
+		llvm::Type *ret = get(fn->ret);
+
+		return llvm::FunctionType::get(ret, params, false);
+	}
+};
+
+class MirLowerer {
+public:
+	MirLowerer(HirLowerer mir_)
+			: context(), module("example", context), mir(std::move(mir_)),
+				ctx(mir.ctx, context, module),
+				scope(std::make_shared<LlScope>(nullptr)) {}
+
+	llvm::LLVMContext context;
+	llvm::Module module;
+
+	void lower() {
+		auto nodes = mir.lower();
+
+		for (const Mir &node : nodes) {
+			std::visit([&](auto &&arg) { lower(scope, arg); }, node);
 		}
 	}
 
-	return llvm::FunctionType::get(llvmType(fn.ret, module), args, false);
-}
+	void compile(llvm::OptimizationLevel level, llvm::ThinOrFullLTOPhase phase) {
+		if (llvm::verifyModule(module, &llvm::errs())) {
+			llvm::errs() << "Error: Module verification failed!\n";
+			return;
+		}
 
-llvm::Type *llvmType(std::optional<HirPath> &path, Module &module) {
-	if (path) {
-		return llvmType(*path, module);
+		llvm::InitializeNativeTarget();
+		llvm::InitializeNativeTargetAsmPrinter();
+
+		// 3. Get the target triple (e.g., "x86_64-unknown-linux-gnu")
+		std::string targetTriple = llvm::sys::getDefaultTargetTriple();
+		module.setTargetTriple(targetTriple);
+
+		// 4. Look up the target machine for the target triple
+		std::string error;
+		const llvm::Target *target =
+				llvm::TargetRegistry::lookupTarget(targetTriple, error);
+
+		if (!target) {
+			llvm::errs() << "Error: " << error;
+			return;
+		}
+
+		// 5. Create a target machine
+		llvm::TargetOptions opt;
+		llvm::Reloc::Model relocModel = llvm::Reloc::Model::PIC_;
+		llvm::TargetMachine *targetMachine = target->createTargetMachine(
+				targetTriple, "generic", "", opt, relocModel);
+
+		// 6. Set the module's data layout
+		module.setDataLayout(targetMachine->createDataLayout());
+
+		llvm::PassBuilder passBuilder;
+
+		llvm::LoopAnalysisManager loopAnalysisManager;
+		llvm::FunctionAnalysisManager functionAnalysisManager;
+		llvm::CGSCCAnalysisManager cgsccAnalysisManager;
+		llvm::ModuleAnalysisManager moduleAnalysisManager;
+
+		passBuilder.registerModuleAnalyses(moduleAnalysisManager);
+		passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
+		passBuilder.registerFunctionAnalyses(functionAnalysisManager);
+		passBuilder.registerLoopAnalyses(loopAnalysisManager);
+		passBuilder.crossRegisterProxies(
+				loopAnalysisManager, functionAnalysisManager, cgsccAnalysisManager,
+				moduleAnalysisManager);
+
+		llvm::ModulePassManager modulePassManager;
+
+		modulePassManager.addPass(
+				passBuilder.buildModuleSimplificationPipeline(level, phase));
+
+		modulePassManager.run(module, moduleAnalysisManager);
+
+		// 8. Emit object code to a file
+		std::error_code ec;
+		llvm::raw_fd_ostream dest("target/output.o", ec, llvm::sys::fs::OF_None);
+		if (ec) {
+			llvm::errs() << "Error opening file: " << ec.message();
+			return;
+		}
+
+		// 9. Emit object code
+		llvm::legacy::PassManager codeGenPassManager;
+		if (targetMachine->addPassesToEmitFile(codeGenPassManager, dest, nullptr,
+																					 llvm::CodeGenFileType::ObjectFile)) {
+			llvm::errs() << "Error: TargetMachine can't emit object file";
+			return;
+		}
+
+		codeGenPassManager.run(module);
+		dest.flush();
 	}
 
-	throw std::runtime_error("type required");
-}
+private:
+	llvm::IRBuilder<> builder{context};
 
-llvm::Type *llvmType(HirPath &path, Module &module) {
-	if (auto type = module.scope.get(path)) {
-		return *type;
+	HirLowerer mir;
+	LlTypeCtx ctx;
+	std::shared_ptr<LlScope> scope;
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirFn &mir) {
+		llvm::FunctionType *ty = ctx.get<llvm::FunctionType>(mir.type);
+
+		llvm::Function *fn = llvm::Function::Create(
+				ty, llvm::Function::ExternalLinkage, mir.ident.value(), module);
+
+		for (std::size_t i = 0; i < mir.params.size(); i++) {
+			llvm::Argument *arg = fn->arg_begin() + i;
+			arg->setName(mir.params[i].ident.value());
+		}
+
+		scope->setFn(mir.ident, fn);
+
+		llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", fn);
+		std::shared_ptr<LlScope> entryScope = std::make_shared<LlScope>(scope);
+
+		builder.SetInsertPoint(entry);
+
+		for (const MirBlockItem &node : mir.block.items) {
+			std::visit([&](auto &&arg) { lower(entryScope, arg); }, node);
+		}
 	}
 
-	throw std::runtime_error("no type found");
-}
+	void lower(std::shared_ptr<LlScope> &scope, const MirStruct &mir) {
+		ctx.get<llvm::StructType>(mir.type);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirLit &mir) {
+		if (auto it = std::get_if<int>(&mir.value)) {
+			return builder.getInt32(*it);
+		} else if (auto it = std::get_if<double>(&mir.value)) {
+			auto ty = ctx.ty.get(MirPath{"f64"});
+			llvm::Type *doubleTy = ctx.get(ty);
+
+			return llvm::ConstantFP::get(doubleTy, *it);
+		} else if (auto it = std::get_if<std::string>(&mir.value)) {
+			return builder.CreateGlobalStringPtr(*it);
+		} else if (auto it = std::get_if<bool>(&mir.value)) {
+			return builder.getInt1(*it);
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirIdent &mir) {
+		return scope->get(mir);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirFnCall &mir) {
+		llvm::Function *fn = scope->getFn(mir.path);
+
+		std::vector<llvm::Value *> args;
+
+		for (const MirExpr &arg : mir.args) {
+			args.push_back(lower(scope, arg));
+		}
+
+		return builder.CreateCall(fn, args);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirFnCall> &mir) {
+		return lower(scope, *mir);
+	}
+
+	llvm::Value *lowerBinOp(const MirTypeBuiltin &type, Op op, llvm::Value *lhs,
+													llvm::Value *rhs) {
+		switch (type) {
+		case MirTypeBuiltin::Float16:
+		case MirTypeBuiltin::Float32:
+		case MirTypeBuiltin::Float64:
+			switch (op) {
+			case Op::ADD:
+				return builder.CreateFAdd(lhs, rhs);
+			case Op::SUB:
+				return builder.CreateFSub(lhs, rhs);
+			case Op::MUL:
+				return builder.CreateFMul(lhs, rhs);
+			case Op::DIV:
+				return builder.CreateFDiv(lhs, rhs);
+			case Op::MOD:
+				return builder.CreateFRem(lhs, rhs);
+			case Op::POW: {
+				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
+						&module, llvm::Intrinsic::pow, {lhs->getType()});
+
+				return builder.CreateCall(pow, {lhs, rhs});
+			}
+			case Op::EQEQ:
+				return builder.CreateFCmpOEQ(lhs, rhs);
+			case Op::NEQ:
+				return builder.CreateFCmpONE(lhs, rhs);
+			case Op::LT:
+				return builder.CreateFCmpOLT(lhs, rhs);
+			case Op::GT:
+				return builder.CreateFCmpOGT(lhs, rhs);
+			}
+		case MirTypeBuiltin::Int8:
+		case MirTypeBuiltin::Int16:
+		case MirTypeBuiltin::Int32:
+		case MirTypeBuiltin::Int64:
+			switch (op) {
+			case Op::ADD:
+				return builder.CreateAdd(lhs, rhs);
+			case Op::SUB:
+				return builder.CreateSub(lhs, rhs);
+			case Op::MUL:
+				return builder.CreateMul(lhs, rhs);
+			case Op::DIV:
+				return builder.CreateSDiv(lhs, rhs);
+			case Op::MOD:
+				return builder.CreateSRem(lhs, rhs);
+			case Op::POW: {
+				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
+						&module, llvm::Intrinsic::pow, {lhs->getType()});
+
+				return builder.CreateCall(pow, {lhs, rhs});
+			}
+			case Op::EQEQ:
+				return builder.CreateICmpEQ(lhs, rhs);
+			case Op::NEQ:
+				return builder.CreateICmpNE(lhs, rhs);
+			case Op::LT:
+				return builder.CreateICmpSLT(lhs, rhs);
+			case Op::GT:
+				return builder.CreateICmpSGT(lhs, rhs);
+			case Op::LTE:
+				return builder.CreateICmpSLE(lhs, rhs);
+			case Op::GTE:
+				return builder.CreateICmpSGE(lhs, rhs);
+			case Op::BIT_AND:
+				return builder.CreateAnd(lhs, rhs);
+			case Op::BIT_OR:
+				return builder.CreateOr(lhs, rhs);
+			case Op::BIT_XOR:
+				return builder.CreateXor(lhs, rhs);
+			case Op::BIT_LSHIFT:
+				return builder.CreateShl(lhs, rhs);
+			case Op::BIT_RSHIFT:
+				return builder.CreateLShr(lhs, rhs);
+			}
+		case MirTypeBuiltin::Uint8:
+		case MirTypeBuiltin::Uint16:
+		case MirTypeBuiltin::Uint32:
+		case MirTypeBuiltin::Uint64:
+			switch (op) {
+			case Op::ADD:
+				return builder.CreateAdd(lhs, rhs);
+			case Op::SUB:
+				return builder.CreateSub(lhs, rhs);
+			case Op::MUL:
+				return builder.CreateMul(lhs, rhs);
+			case Op::DIV:
+				return builder.CreateUDiv(lhs, rhs);
+			case Op::MOD:
+				return builder.CreateURem(lhs, rhs);
+			case Op::POW: {
+				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
+						&module, llvm::Intrinsic::pow, {lhs->getType()});
+
+				return builder.CreateCall(pow, {lhs, rhs});
+			}
+			case Op::EQEQ:
+				return builder.CreateICmpEQ(lhs, rhs);
+			case Op::NEQ:
+				return builder.CreateICmpNE(lhs, rhs);
+			case Op::LT:
+				return builder.CreateICmpULT(lhs, rhs);
+			case Op::GT:
+				return builder.CreateICmpUGT(lhs, rhs);
+			case Op::LTE:
+				return builder.CreateICmpULE(lhs, rhs);
+			case Op::GTE:
+				return builder.CreateICmpUGE(lhs, rhs);
+			case Op::BIT_AND:
+				return builder.CreateAnd(lhs, rhs);
+			case Op::BIT_OR:
+				return builder.CreateOr(lhs, rhs);
+			case Op::BIT_XOR:
+				return builder.CreateXor(lhs, rhs);
+			case Op::BIT_LSHIFT:
+				return builder.CreateShl(lhs, rhs);
+			case Op::BIT_RSHIFT:
+				return builder.CreateLShr(lhs, rhs);
+			}
+		case MirTypeBuiltin::Bool:
+			switch (op) {
+			case Op::AND:
+				return builder.CreateLogicalAnd(lhs, rhs);
+			case Op::OR:
+				return builder.CreateLogicalOr(lhs, rhs);
+			}
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Value *lowerUnOp(const MirTypeBuiltin &type, Op op,
+												 llvm::Value *value) {
+		switch (type) {
+		case MirTypeBuiltin::Float16:
+		case MirTypeBuiltin::Float32:
+		case MirTypeBuiltin::Float64:
+			switch (op) {
+			case Op::SUB:
+				return builder.CreateFNeg(value);
+			}
+		case MirTypeBuiltin::Int8:
+		case MirTypeBuiltin::Int16:
+		case MirTypeBuiltin::Int32:
+		case MirTypeBuiltin::Int64:
+			switch (op) {
+			case Op::SUB:
+				return builder.CreateNeg(value);
+			case Op::BIT_NOT:
+				return builder.CreateNot(value);
+			}
+		case MirTypeBuiltin::Uint8:
+		case MirTypeBuiltin::Uint16:
+		case MirTypeBuiltin::Uint32:
+		case MirTypeBuiltin::Uint64:
+			switch (op) {
+			case Op::SUB:
+				return builder.CreateNeg(value);
+			case Op::BIT_NOT:
+				return builder.CreateNot(value);
+			}
+		case MirTypeBuiltin::Bool:
+			switch (op) {
+			case Op::NOT:
+				return builder.CreateNot(value);
+			}
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirBinOp &mir) {
+		llvm::Value *lhs = lower(scope, mir.lhs);
+		llvm::Value *rhs = lower(scope, mir.rhs);
+
+		const MirTypeKind &kind = ctx.ty.get(mir.lhs.type).kind;
+		const MirTypeBuiltin &builtin = std::get<MirTypeBuiltin>(kind);
+
+		return lowerBinOp(builtin, mir.op.variant, lhs, rhs);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirBinOp> &mir) {
+		return lower(scope, *mir);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirUnOp &mir) {
+		llvm::Value *value = lower(scope, mir.expr);
+
+		const MirTypeKind &kind = ctx.ty.get(mir.expr.type).kind;
+		const MirTypeBuiltin &builtin = std::get<MirTypeBuiltin>(kind);
+
+		return lowerUnOp(builtin, mir.op.variant, value);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirUnOp> &mir) {
+		return lower(scope, *mir);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirExpr &mir) {
+		return std::visit([&](auto &&arg) { return lower(scope, arg); }, mir.expr);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirLoop &mir) {
+		if (scope->fn == nullptr) {
+			throw std::runtime_error("no block");
+		}
+
+		llvm::BasicBlock *loopCondBlock =
+				llvm::BasicBlock::Create(context, "loop_cond", scope->fn);
+
+		builder.CreateBr(loopCondBlock);
+		builder.SetInsertPoint(loopCondBlock);
+
+		llvm::BasicBlock *loopBodyBlock =
+				llvm::BasicBlock::Create(context, "loop_body", scope->fn);
+
+		llvm::BasicBlock *postLoopBlock =
+				llvm::BasicBlock::Create(context, "post_loop", scope->fn);
+
+		// new scope
+		std::shared_ptr<LlScope> loopScope =
+				std::make_shared<LlScope>(scope, scope->fn);
+
+		if (std::optional<MirExpr> c = mir.cond) {
+			llvm::Value *cond = lower(loopScope, *c);
+			builder.CreateCondBr(cond, loopBodyBlock, postLoopBlock);
+
+			loopScope = std::make_shared<LlScope>(loopScope);
+		} else {
+			builder.CreateBr(loopBodyBlock);
+		}
+
+		builder.SetInsertPoint(loopBodyBlock);
+
+		for (const MirBlockItem &node : mir.block.items) {
+			std::visit([&](auto &&arg) { lower(loopScope, arg); }, node);
+		}
+
+		builder.CreateBr(loopCondBlock);
+		builder.SetInsertPoint(postLoopBlock);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirIf &mir) {
+		if (scope->fn == nullptr) {
+			throw std::runtime_error("no block");
+		}
+
+		llvm::BasicBlock *ifCondBlock =
+				llvm::BasicBlock::Create(context, "if_cond", scope->fn);
+
+		builder.CreateBr(ifCondBlock);
+		builder.SetInsertPoint(ifCondBlock);
+
+		llvm::BasicBlock *ifBodyBlock =
+				llvm::BasicBlock::Create(context, "if_body", scope->fn);
+
+		llvm::BasicBlock *postIfBlock =
+				llvm::BasicBlock::Create(context, "post_if", scope->fn);
+
+		// new scope
+		std::shared_ptr<LlScope> ifScope =
+				std::make_shared<LlScope>(scope, scope->fn);
+
+		llvm::Value *cond = lower(ifScope, mir.cond);
+		builder.CreateCondBr(cond, ifBodyBlock, postIfBlock);
+
+		builder.SetInsertPoint(ifBodyBlock);
+
+		for (const MirBlockItem &node : mir.block.items) {
+			std::visit([&](auto &&arg) { lower(ifScope, arg); }, node);
+		}
+
+		builder.CreateBr(postIfBlock);
+		builder.SetInsertPoint(postIfBlock);
+
+		// check for else
+		if (auto &else_ = mir.else_) {
+			lower(scope, **else_);
+		}
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirAssign &mir) {
+		llvm::Value *value = lower(scope, mir.expr);
+		llvm::PHINode *phi = builder.CreatePHI(value->getType(), 1);
+
+		phi->addIncoming(value, builder.GetInsertBlock());
+		scope->set(mir.ident, phi);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirReassign &mir) {
+		llvm::Value *value = lower(scope, mir.expr);
+
+		scope->reassign(mir.ident, value, builder.GetInsertBlock());
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirReturn &mir) {
+		if (mir.expr) {
+			llvm::Value *value = lower(scope, *mir.expr);
+			builder.CreateRet(value);
+		} else {
+			builder.CreateRetVoid();
+		}
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope,
+						 const std::shared_ptr<MirLoop> &mir) {
+		lower(scope, *mir);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope,
+						 const std::shared_ptr<MirIf> &mir) {
+		lower(scope, *mir);
+	}
+};

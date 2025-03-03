@@ -1,3 +1,5 @@
+#pragma once
+
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -76,6 +78,7 @@ template <> struct std::hash<MirIdent> {
 class Scope {
 public:
 	Scope(std::shared_ptr<Scope> parent) : parent(parent) {}
+	Scope() = default;
 
 	void add(MirIdent ident, TypeHandle type) { variables.emplace(ident, type); }
 
@@ -85,22 +88,29 @@ public:
 		}
 
 		if (parent) {
-			return parent->get()->get(ident);
+			return parent->get(ident);
 		}
 
-		throw std::runtime_error("variable not found");
+		throw std::runtime_error(
+				fmt::format("variable '{}' not found", ident.value()));
 	}
 
 private:
-	std::optional<std::shared_ptr<Scope>> parent;
+	std::shared_ptr<Scope> parent;
 	std::unordered_map<MirIdent, TypeHandle> variables;
 };
 
 class MirPath {
 public:
 	MirPath(MirIdent ident) : parts{ident} {}
-	MirPath(std::string ident) : parts{MirIdent{ident}} {}
 	MirPath() = default;
+	MirPath(std::string ident) : parts{MirIdent{ident}} {}
+	template <typename... Args> MirPath(std::string ident, Args... args) {
+		parts.push_back(MirIdent{ident});
+		(parts.push_back(MirIdent{args}), ...);
+	}
+
+	std::vector<MirIdent> parts;
 
 	bool operator==(const MirPath &other) const { return parts == other.parts; }
 	std::size_t hash() const {
@@ -125,7 +135,7 @@ public:
 		return path;
 	}
 
-	MirPath operator+(const MirPath &other) {
+	MirPath operator+(const MirPath &other) const {
 		MirPath path = *this;
 
 		for (auto &part : other.parts) {
@@ -138,13 +148,30 @@ public:
 
 		return path;
 	}
-
-private:
-	std::vector<MirIdent> parts;
 };
 
 template <> struct std::hash<MirPath> {
 	std::size_t operator()(const MirPath &path) const { return path.hash(); }
+};
+
+template <> class fmt::formatter<MirPath> {
+public:
+	constexpr auto parse(format_parse_context &ctx) { return ctx.begin(); }
+
+	template <typename Context>
+	auto format(const MirPath &path, Context &ctx) const {
+		std::string str;
+
+		for (std::size_t i = 0; i < path.parts.size(); i++) {
+			str += path.parts[i].value();
+
+			if (i < path.parts.size() - 1) {
+				str += "::";
+			}
+		}
+
+		return format_to(ctx.out(), "{}", str);
+	}
 };
 
 class TypeCtx;
@@ -161,9 +188,10 @@ public:
 
 class MirStruct {
 public:
-	MirStruct(MirIdent ident, std::vector<MirStructField> fields)
-			: ident(ident), fields(fields) {}
+	MirStruct(TypeHandle type, MirIdent ident, std::vector<MirStructField> fields)
+			: type(type), ident(ident), fields(fields) {}
 
+	TypeHandle type;
 	MirIdent ident;
 	std::vector<MirStructField> fields;
 
@@ -188,6 +216,65 @@ public:
 	MirType(MirTypeKind kind) : kind(kind) {}
 
 	MirTypeKind kind;
+
+	std::string str(const TypeCtx &ctx) const {
+		return std::visit([&](auto &&arg) -> std::string { return str(ctx, arg); },
+											kind);
+	}
+
+	// get fn if it's a function type
+	std::shared_ptr<MirFn> fn() const {
+		if (auto fn = std::get_if<std::shared_ptr<MirFn>>(&kind)) {
+			return *fn;
+		}
+
+		return nullptr;
+	}
+
+private:
+	std::string str(const TypeCtx &ctx, const std::shared_ptr<MirFn> &fn) const;
+	std::string str(const TypeCtx &ctx, const MirArray &array) const;
+
+	std::string str(const TypeCtx &ctx, const MirStruct &type) const {
+		return fmt::format("struct {}", type.ident.value());
+	}
+
+	std::string str(const TypeCtx &ctx, const MirTypeBuiltin &type) const {
+		switch (type) {
+		case MirTypeBuiltin::Bool:
+			return "bool";
+		case MirTypeBuiltin::Char:
+			return "char";
+		case MirTypeBuiltin::Uint8:
+			return "u8";
+		case MirTypeBuiltin::Uint16:
+			return "u16";
+		case MirTypeBuiltin::Uint32:
+			return "u32";
+		case MirTypeBuiltin::Uint64:
+			return "u64";
+		case MirTypeBuiltin::Usize:
+			return "usize";
+		case MirTypeBuiltin::Int8:
+			return "i8";
+		case MirTypeBuiltin::Int16:
+			return "i16";
+		case MirTypeBuiltin::Int32:
+			return "i32";
+		case MirTypeBuiltin::Int64:
+			return "i64";
+		case MirTypeBuiltin::Isize:
+			return "isize";
+		case MirTypeBuiltin::Float16:
+			return "f16";
+		case MirTypeBuiltin::Float32:
+			return "f32";
+		case MirTypeBuiltin::Float64:
+			return "f64";
+		case MirTypeBuiltin::Void:
+			return "void";
+		}
+	}
 };
 
 class TypeCtx {
@@ -195,6 +282,8 @@ public:
 	std::shared_ptr<Scope> scope;
 
 	TypeCtx() {
+		scope = std::make_shared<Scope>(Scope{});
+
 		add(MirPath{"bool"}, MirType{MirTypeBuiltin::Bool});
 		add(MirPath{"char"}, MirType{MirTypeBuiltin::Char});
 
@@ -231,17 +320,17 @@ public:
 		return handle;
 	}
 
-	TypeHandle get(MirPath path) {
+	TypeHandle get(MirPath path) const {
 		path = anchor + path;
 
 		if (auto it = handles.find(path); it != handles.end()) {
 			return it->second;
 		}
 
-		throw std::runtime_error("type not found");
+		throw std::runtime_error(fmt::format("type not found: {}", path));
 	}
 
-	MirType &get(TypeHandle handle) {
+	const MirType &get(TypeHandle handle) const {
 		if (auto it = symbols.find(handle); it != symbols.end()) {
 			return it->second;
 		}
@@ -258,6 +347,12 @@ private:
 	std::unordered_map<TypeHandle, MirType> symbols;
 	MirPath anchor;
 };
+
+std::string MirType::str(const TypeCtx &ctx, const MirArray &array) const {
+	auto inner = ctx.get(array.type).str(ctx);
+
+	return fmt::format("[{}; {}]", inner, array.size);
+}
 
 MirStructField MirStructField::from_hir(TypeCtx &ctx, HirTypedIdent hir) {
 	auto path = MirIdent::from_hir(hir.ident);
@@ -278,8 +373,11 @@ MirStruct MirStruct::from_hir(TypeCtx &ctx, HirStruct hir) {
 	}
 
 	auto ident = MirIdent::from_hir(hir.ident);
+	auto struct_ = MirStruct{ctx.get(MirPath{"void"}), ident, fields};
 
-	return MirStruct{ident, fields};
+	struct_.type = ctx.add(MirPath{ident}, MirType{struct_});
+
+	return struct_;
 }
 
 class MirLit {
@@ -296,7 +394,9 @@ public:
 		} else if (std::holds_alternative<double>(value)) {
 			return ctx.get(MirPath{"f64"});
 		} else if (std::holds_alternative<std::string>(value)) {
-			return ctx.get(MirPath{"string"});
+			return ctx.get(MirPath{"std", "string"});
+		} else if (std::holds_alternative<bool>(value)) {
+			return ctx.get(MirPath{"bool"});
 		}
 
 		throw std::runtime_error("not implemented");
@@ -338,7 +438,12 @@ public:
 		auto rhs = MirExpr::from_hir(ctx, hir->rhs);
 
 		if (lhs.type != rhs.type) {
-			throw std::runtime_error("type mismatch");
+			auto expected = ctx.get(lhs.type);
+			auto given = ctx.get(rhs.type);
+
+			throw std::runtime_error(fmt::format(
+					"type mismatch for operator `{}`. expected {}, found {}",
+					TokenOp::str(hir->op.variant), expected.str(ctx), given.str(ctx)));
 		}
 
 		return MirExpr{std::make_shared<MirBinOp>(lhs, rhs, hir->op), lhs.type};
@@ -370,22 +475,14 @@ public:
 
 class MirFnCall {
 public:
-	MirFnCall(MirPath path, std::vector<MirExpr> args) : path(path), args(args) {}
+	MirFnCall(MirPath path, std::vector<MirExpr> args, TypeHandle type)
+			: path(path), args(args), type(type) {}
 
 	MirPath path;
 	std::vector<MirExpr> args;
+	TypeHandle type;
 
-	static MirFnCall from_hir(TypeCtx &ctx, HirFnCall hir) {
-		auto path = MirPath::from_hir(hir.path);
-
-		std::vector<MirExpr> args;
-
-		for (auto &arg : hir.args) {
-			args.push_back(MirExpr::from_hir(ctx, arg));
-		}
-
-		return MirFnCall{path, args};
-	}
+	static MirFnCall from_hir(TypeCtx &ctx, HirFnCall hir);
 };
 
 class MirAssign {
@@ -398,17 +495,23 @@ public:
 	static MirAssign from_hir(TypeCtx &ctx, HirAssign hir) {
 		auto path = MirIdent::from_hir(hir.ident.ident);
 
-		if (!hir.ident.type) {
-			throw std::runtime_error("not implemented. please specify type");
-		}
-
-		auto typePath = MirPath::from_hir(*hir.ident.type);
-		auto type = ctx.get(typePath);
 		auto expr = MirExpr::from_hir(ctx, hir.expr);
 
-		if (expr.type != type) {
-			throw std::runtime_error("type mismatch");
+		if (hir.ident.type) {
+			auto typePath = MirPath::from_hir(*hir.ident.type);
+			auto type = ctx.get(typePath);
+
+			if (expr.type != type) {
+				auto lhs = ctx.get(type);
+				auto rhs = ctx.get(expr.type);
+
+				throw std::runtime_error(fmt::format(
+						"type mismatch for assignment of `{}`. expected {}, found {}",
+						path.value(), lhs.str(ctx), rhs.str(ctx)));
+			}
 		}
+
+		ctx.scope->add(path, expr.type);
 
 		return MirAssign{path, expr};
 	}
@@ -426,7 +529,13 @@ public:
 		auto expr = MirExpr::from_hir(ctx, hir.expr);
 
 		if (ctx.scope->get(path) != expr.type) {
-			throw std::runtime_error("type mismatch");
+			auto lhs = ctx.get(ctx.scope->get(path));
+			auto rhs = ctx.get(expr.type);
+
+			throw std::runtime_error(
+					fmt::format("type mismatch for re-assignment of variable `{}`. "
+											"expected {}, found {}",
+											path.value(), lhs.str(ctx), rhs.str(ctx)));
 		}
 
 		return MirReassign{path, expr};
@@ -435,7 +544,7 @@ public:
 
 class MirReturn {
 public:
-	MirReturn(std::optional<MirExpr> expr) : expr(expr) {}
+	explicit MirReturn(std::optional<MirExpr> expr) : expr(expr) {}
 
 	std::optional<MirExpr> expr;
 
@@ -469,6 +578,8 @@ public:
 	static MirBlock from_hir(TypeCtx &ctx, HirBlock hir) {
 		std::vector<MirBlockItem> items;
 
+		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
+
 		for (auto &hir : hir.stmts) {
 			items.push_back(std::visit(
 					[&ctx](auto &&hir) { return MirBlock::lower(ctx, hir); }, hir.stmt));
@@ -494,18 +605,26 @@ public:
 	TypeHandle type;
 
 	static MirFnParam from_hir(TypeCtx &ctx, HirTypedIdent hir) {
-		auto path = MirIdent::from_hir(hir.ident);
-		auto type = ctx.get(path);
+		auto ident = MirIdent::from_hir(hir.ident);
 
-		return MirFnParam{path, type};
+		if (auto type = hir.type) {
+			auto path = MirPath::from_hir(*type);
+			auto ty = ctx.get(path);
+
+			return MirFnParam{ident, ty};
+		} else {
+			throw std::runtime_error("not implemented. please specify type");
+		}
 	}
 };
 
 class MirFn {
 public:
-	MirFn(MirIdent ident, std::vector<MirFnParam> params, MirBlock block,
-				TypeHandle ret)
-			: ident(ident), params(params), block(block), ret(ret) {}
+	MirFn(TypeHandle type, MirIdent ident, std::vector<MirFnParam> params,
+				MirBlock block, TypeHandle ret)
+			: type(type), ident(ident), params(params), block(block), ret(ret) {}
+
+	TypeHandle type;
 
 	MirIdent ident;
 	std::vector<MirFnParam> params;
@@ -513,6 +632,7 @@ public:
 	TypeHandle ret;
 
 	static MirFn from_hir(TypeCtx &ctx, HirFn hir) {
+		auto scope = ctx.scope;
 		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
 
 		std::vector<MirFnParam> params;
@@ -528,14 +648,76 @@ public:
 		auto ret = ctx.get(MirPath::from_hir(
 				hir.ret.value_or(HirPath{Span{}, {TokenIdent{Span{}, "void"}}})));
 
-		auto fn = MirFn{ident, params, MirBlock{}, ret};
+		auto fn = MirFn{ret, ident, params, MirBlock{}, ret};
+		auto ty = ctx.add(ident, MirType{std::make_shared<MirFn>(fn)});
 
-		ctx.add(ident, MirType{std::make_shared<MirFn>(fn)});
+		fn.type = ty;
+
+		scope->add(ident, ty);
 		fn.block = MirBlock::from_hir(ctx, hir.block);
 
 		return fn;
 	}
 };
+
+MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
+	auto path = MirPath::from_hir(hir.path);
+
+	if (path.parts.size() != 1) {
+		throw std::runtime_error("not implemented yet.");
+	}
+
+	auto fnType = ctx.scope->get(path.parts[0]);
+	auto maybeFn = ctx.get(fnType);
+	std::shared_ptr<MirFn> fn = maybeFn.fn();
+
+	if (!fn) {
+		throw std::runtime_error(
+				fmt::format("expected function, found {}", maybeFn.str(ctx)));
+	}
+
+	if (hir.args.size() != fn->params.size()) {
+		throw std::runtime_error(fmt::format("expected {} arguments, found {}",
+																				 fn->params.size(), hir.args.size()));
+	}
+
+	std::vector<MirExpr> args;
+
+	for (std::size_t i = 0; i < hir.args.size(); i++) {
+		auto arg = MirExpr::from_hir(ctx, hir.args[i]);
+
+		if (arg.type != fn->params[i].type) {
+			auto expected = ctx.get(fn->params[i].type);
+			auto given = ctx.get(arg.type);
+
+			throw std::runtime_error(
+					fmt::format("type mismatch for argument {}. expected {}, found {}", i,
+											expected.str(ctx), given.str(ctx)));
+		}
+
+		args.push_back(arg);
+	}
+
+	return MirFnCall{path, args, fn->ret};
+}
+
+std::string MirType::str(const TypeCtx &ctx,
+												 const std::shared_ptr<MirFn> &fn) const {
+	std::string formatted = "fn(";
+
+	for (std::size_t i = 0; i < fn->params.size(); i++) {
+		formatted += ctx.get(fn->params[i].type).str(ctx);
+
+		if (i + 1 < fn->params.size()) {
+			formatted += ", ";
+		}
+	}
+
+	formatted += "): ";
+	formatted += ctx.get(fn->ret).str(ctx);
+
+	return formatted;
+}
 
 MirExpr MirExpr::from_hir(TypeCtx &ctx, std::shared_ptr<HirFnCall> hir) {
 	auto call = MirFnCall::from_hir(ctx, *hir);
@@ -611,6 +793,8 @@ public:
 		std::optional<MirExpr> cond;
 		std::optional<MirStmt> step;
 
+		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
+
 		if (hir.init) {
 			if (!hir.init->needsSemi()) {
 				throw std::runtime_error("not implemented");
@@ -636,6 +820,8 @@ public:
 	}
 
 	static MirLoop from_hir(TypeCtx &ctx, HirWhile hir) {
+		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
+
 		auto cond = MirExpr::from_hir(ctx, hir.cond);
 		auto block = MirBlock::from_hir(ctx, hir.block);
 
@@ -695,6 +881,8 @@ class HirLowerer {
 public:
 	HirLowerer(std::vector<Hir> hir) : hir(hir) {}
 
+	TypeCtx ctx;
+
 	std::vector<Mir> lower() {
 		auto mainScope = ctx.scope;
 		std::vector<Mir> mir;
@@ -703,6 +891,22 @@ public:
 			ctx.resetAnchor();
 			ctx.scope = mainScope;
 			mir.push_back(std::visit([this](auto &&hir) { return lower(hir); }, hir));
+		}
+
+		// make sure there's a main function with no args and that returns i32
+		auto mainHandle = ctx.get(MirPath{"main"});
+		auto main = ctx.get(mainHandle);
+
+		if (auto fn = std::get_if<std::shared_ptr<MirFn>>(&main.kind)) {
+			if ((*fn)->params.size() != 0) {
+				throw std::runtime_error("main function must have no arguments");
+			}
+
+			if ((*fn)->ret != ctx.get(MirPath{"i32"})) {
+				throw std::runtime_error("main function must return i32");
+			}
+		} else {
+			throw std::runtime_error("main function not found");
 		}
 
 		return mir;
@@ -724,5 +928,4 @@ public:
 
 private:
 	std::vector<Hir> hir;
-	TypeCtx ctx;
 };
