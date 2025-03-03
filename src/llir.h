@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include <unordered_set>
 
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
@@ -13,6 +14,8 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Process.h>
+#include <llvm/Support/Program.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
@@ -22,13 +25,14 @@
 
 class LlScope {
 public:
-	LlScope(std::shared_ptr<LlScope> parent) : parent(parent) {}
-	LlScope(std::shared_ptr<LlScope> parent, llvm::Function *fn)
-			: fn(fn), parent(parent) {}
+	LlScope(std::shared_ptr<LlScope> parent, llvm::Function *fn = nullptr,
+					llvm::BasicBlock *block = nullptr)
+			: fn(fn), block(block), parent(parent) {}
 
 	llvm::Function *fn = nullptr;
+	llvm::BasicBlock *block = nullptr;
 
-	llvm::Type *get(MirIdent ident) {
+	llvm::Value *get(MirIdent ident) {
 		if (auto it = variables.find(ident); it != variables.end()) {
 			return it->second;
 		}
@@ -38,6 +42,22 @@ public:
 		}
 
 		throw std::runtime_error("variable not found");
+	}
+
+	LlScope &getScope(MirIdent ident) {
+		// if it's defined in the local scope then we want to use it
+		if (local.contains(ident)) {
+			if (auto it = variables.find(ident); it != variables.end()) {
+				return *this;
+			}
+		}
+
+		if (parent) {
+			return parent->getScope(ident);
+		}
+
+		throw std::runtime_error(
+				fmt::format("block variable not found: {}", ident.value()));
 	}
 
 	llvm::Function *getFn(MirPath path) {
@@ -52,27 +72,43 @@ public:
 		throw std::runtime_error("function not found");
 	}
 
-	void set(MirIdent ident, llvm::Type *value) { variables[ident] = value; }
+	void set(MirIdent ident, llvm::Value *value) {
+		variables[ident] = value;
+		local.insert(ident);
+	}
 
-	void reassign(MirIdent ident, llvm::Value *value, llvm::BasicBlock *block) {
-		llvm::PHINode *phi = nullptr;
+	void reassign(MirIdent ident, llvm::Value *value) {
+		get(ident); // ensure it exists
 
-		// Check if the variable already exists
-		if (auto it = variables.find(ident); it != variables.end()) {
-			phi = it->second;
-		} else if (parent) {
-			// If the variable exists in a parent scope, create a new PHINode in the
-			// current scope
-			phi = llvm::PHINode::Create(parent->get(ident)->getType(), 2,
-																	ident.value(), block);
-			phi->addIncoming(parent->get(ident), block);
-			variables[ident] = phi;
-		} else {
-			throw std::runtime_error("variable not found");
+		// unconditionally add it to the local scope, but don't set `local` since it
+		// potentially wasn't declared here
+		variables[ident] = value;
+
+		// in whichever block it's declared in, we need to replace it with a phi
+		// node
+		LlScope &scope = getScope(ident);
+
+		// if the scope already contains a PHINode, then we just need to replace the
+		// edge with the new value
+		auto node = scope.variables[ident];
+
+		if (auto phi = llvm::dyn_cast<llvm::PHINode>(node)) {
+			phi->removeIncomingValue(block);
+			phi->addIncoming(value, block);
+
+			scope.variables[ident] = phi;
+			// if it's local, then we don't want to do anything (we already set the
+			// variable to a value)
+		} else if (!local.contains(ident)) {
+			llvm::PHINode *phi2 = llvm::PHINode::Create(value->getType(), 2,
+																									ident.value(), scope.block);
+
+			node->replaceAllUsesWith(phi2);
+			phi2->addIncoming(node, scope.block);
+			phi2->addIncoming(value, block);
+
+			scope.variables[ident] = phi;
 		}
-
-		// Add the new incoming value
-		phi->addIncoming(value, block);
 	}
 
 	void setFn(MirPath path, llvm::Function *fn) { functions[path] = fn; }
@@ -80,7 +116,8 @@ public:
 private:
 	std::shared_ptr<LlScope> parent;
 
-	std::unordered_map<MirIdent, llvm::Type *> variables;
+	std::unordered_set<MirIdent> local;
+	std::unordered_map<MirIdent, llvm::Value *> variables;
 	std::unordered_map<MirPath, llvm::Function *> functions;
 };
 
@@ -148,7 +185,13 @@ private:
 			return llvm::Type::getVoidTy(ctx);
 		}
 
-		throw std::runtime_error("not implemented");
+		throw std::runtime_error("builtin type not implemented");
+	}
+
+	llvm::Type *get(const MirPointer &ptr) {
+		llvm::Type *type = get(ptr.type);
+
+		return type->getPointerTo();
 	}
 
 	llvm::Type *get(const MirStruct &str) {
@@ -168,7 +211,7 @@ private:
 		return llvm::ArrayType::get(type, array.size);
 	}
 
-	llvm::Type *get(const std::shared_ptr<MirFn> &fn) {
+	llvm::Type *get(const std::shared_ptr<MirFnSignature> &fn) {
 		std::vector<llvm::Type *> params;
 
 		for (auto &param : fn->params) {
@@ -178,7 +221,7 @@ private:
 
 		llvm::Type *ret = get(fn->ret);
 
-		return llvm::FunctionType::get(ret, params, false);
+		return llvm::FunctionType::get(ret, params, fn->variadic);
 	}
 };
 
@@ -198,9 +241,41 @@ public:
 		for (const Mir &node : nodes) {
 			std::visit([&](auto &&arg) { lower(scope, arg); }, node);
 		}
+
+		llvm::Function *mainFunction = module.getFunction("main");
+		if (!mainFunction) {
+			llvm::errs() << "Error: main() function not found in the module!\n";
+			return;
+		}
+
+		llvm::FunctionType *exitType =
+				llvm::FunctionType::get(llvm::Type::getVoidTy(context),
+																{llvm::Type::getInt32Ty(context)}, false);
+		llvm::FunctionCallee exitFunction =
+				module.getOrInsertFunction("exit", exitType);
+
+		llvm::FunctionType *startType =
+				llvm::FunctionType::get(llvm::Type::getVoidTy(context), false);
+		llvm::Function *startFunction = llvm::Function::Create(
+				startType, llvm::Function::ExternalLinkage, "_start", module);
+
+		llvm::BasicBlock *entry =
+				llvm::BasicBlock::Create(context, "entry", startFunction);
+		builder.SetInsertPoint(entry);
+
+		llvm::Value *result = builder.CreateCall(mainFunction, {}, "main_ret");
+
+		builder.CreateCall(exitFunction, {result});
+
+		builder.CreateUnreachable();
+
+		if (llvm::verifyFunction(*startFunction, &llvm::errs())) {
+			llvm::errs() << "Error: _start function verification failed!\n";
+		}
 	}
 
-	void compile(llvm::OptimizationLevel level, llvm::ThinOrFullLTOPhase phase) {
+	void compileObjectFile(llvm::OptimizationLevel level,
+												 llvm::ThinOrFullLTOPhase phase) {
 		if (llvm::verifyModule(module, &llvm::errs())) {
 			llvm::errs() << "Error: Module verification failed!\n";
 			return;
@@ -209,11 +284,9 @@ public:
 		llvm::InitializeNativeTarget();
 		llvm::InitializeNativeTargetAsmPrinter();
 
-		// 3. Get the target triple (e.g., "x86_64-unknown-linux-gnu")
 		std::string targetTriple = llvm::sys::getDefaultTargetTriple();
 		module.setTargetTriple(targetTriple);
 
-		// 4. Look up the target machine for the target triple
 		std::string error;
 		const llvm::Target *target =
 				llvm::TargetRegistry::lookupTarget(targetTriple, error);
@@ -223,13 +296,12 @@ public:
 			return;
 		}
 
-		// 5. Create a target machine
 		llvm::TargetOptions opt;
 		llvm::Reloc::Model relocModel = llvm::Reloc::Model::PIC_;
-		llvm::TargetMachine *targetMachine = target->createTargetMachine(
-				targetTriple, "generic", "", opt, relocModel);
+		std::unique_ptr<llvm::TargetMachine> targetMachine =
+				std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
+						targetTriple, "generic", "", opt, relocModel));
 
-		// 6. Set the module's data layout
 		module.setDataLayout(targetMachine->createDataLayout());
 
 		llvm::PassBuilder passBuilder;
@@ -254,7 +326,6 @@ public:
 
 		modulePassManager.run(module, moduleAnalysisManager);
 
-		// 8. Emit object code to a file
 		std::error_code ec;
 		llvm::raw_fd_ostream dest("target/output.o", ec, llvm::sys::fs::OF_None);
 		if (ec) {
@@ -262,7 +333,6 @@ public:
 			return;
 		}
 
-		// 9. Emit object code
 		llvm::legacy::PassManager codeGenPassManager;
 		if (targetMachine->addPassesToEmitFile(codeGenPassManager, dest, nullptr,
 																					 llvm::CodeGenFileType::ObjectFile)) {
@@ -272,6 +342,54 @@ public:
 
 		codeGenPassManager.run(module);
 		dest.flush();
+	}
+
+	void link() {
+		std::string linker;
+
+		std::vector<std::string> args = {linker, "-o", "", "target/output.o"};
+		std::string outputBinary = "target/output";
+
+		if (llvm::Triple(llvm::sys::getProcessTriple()).isOSWindows()) {
+			args.push_back("/entry:main");
+			args.push_back("/subsystem:console");
+			args.push_back("msvcrt.lib");
+
+			outputBinary = "target/output.exe";
+			linker = "link.exe";
+		} else if (llvm::Triple(llvm::sys::getProcessTriple()).isMacOSX()) {
+			args.push_back(
+					"-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib");
+			args.push_back("-lc");
+			args.push_back("-lSystem");
+
+			linker = "ld";
+		} else {
+			args.push_back("-L/lib");
+			args.push_back("-L/usr/lib");
+			args.push_back("-lc");
+			args.push_back("-dynamic-linker");
+			args.push_back("/lib64/ld-linux-x86-64.so.2");
+
+			linker = "/usr/bin/ld";
+		}
+
+		args[2] = outputBinary;
+
+		std::vector<llvm::StringRef> execArgs;
+		for (const auto &arg : args) {
+			execArgs.push_back(arg);
+		}
+
+		std::string errMsg;
+		int result = llvm::sys::ExecuteAndWait(linker, execArgs, std::nullopt, {},
+																					 0, 0, &errMsg);
+
+		if (result != 0) {
+			llvm::errs() << "Linking failed: " << errMsg << "\n";
+		} else {
+			llvm::outs() << "Successfully linked " << outputBinary << "\n";
+		}
 	}
 
 private:
@@ -285,6 +403,31 @@ private:
 		llvm::FunctionType *ty = ctx.get<llvm::FunctionType>(mir.type);
 
 		llvm::Function *fn = llvm::Function::Create(
+				ty, llvm::Function::InternalLinkage, mir.ident.value(), module);
+
+		llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", fn);
+		std::shared_ptr<LlScope> entryScope =
+				std::make_shared<LlScope>(scope, fn, entry);
+
+		for (std::size_t i = 0; i < mir.params.size(); i++) {
+			llvm::Argument *arg = fn->arg_begin() + i;
+			arg->setName(mir.params[i].ident.value());
+			entryScope->set(mir.params[i].ident, arg);
+		}
+
+		scope->setFn(mir.ident, fn);
+
+		builder.SetInsertPoint(entry);
+
+		for (const MirBlockItem &node : mir.block.items) {
+			std::visit([&](auto &&arg) { lower(entryScope, arg); }, node);
+		}
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirFnSignature &mir) {
+		llvm::FunctionType *ty = ctx.get<llvm::FunctionType>(mir.type);
+
+		llvm::Function *fn = llvm::Function::Create(
 				ty, llvm::Function::ExternalLinkage, mir.ident.value(), module);
 
 		for (std::size_t i = 0; i < mir.params.size(); i++) {
@@ -293,15 +436,6 @@ private:
 		}
 
 		scope->setFn(mir.ident, fn);
-
-		llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", fn);
-		std::shared_ptr<LlScope> entryScope = std::make_shared<LlScope>(scope);
-
-		builder.SetInsertPoint(entry);
-
-		for (const MirBlockItem &node : mir.block.items) {
-			std::visit([&](auto &&arg) { lower(entryScope, arg); }, node);
-		}
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirStruct &mir) {
@@ -322,7 +456,7 @@ private:
 			return builder.getInt1(*it);
 		}
 
-		throw std::runtime_error("not implemented");
+		throw std::runtime_error("lowering given literal not implemented");
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirIdent &mir) {
@@ -346,8 +480,8 @@ private:
 		return lower(scope, *mir);
 	}
 
-	llvm::Value *lowerBinOp(const MirTypeBuiltin &type, Op op, llvm::Value *lhs,
-													llvm::Value *rhs) {
+	llvm::Value *lowerBuiltinBinOp(const MirTypeBuiltin &type, Op op,
+																 llvm::Value *lhs, llvm::Value *rhs) {
 		switch (type) {
 		case MirTypeBuiltin::Float16:
 		case MirTypeBuiltin::Float32:
@@ -478,8 +612,8 @@ private:
 		throw std::runtime_error("not implemented");
 	}
 
-	llvm::Value *lowerUnOp(const MirTypeBuiltin &type, Op op,
-												 llvm::Value *value) {
+	llvm::Value *lowerBuiltinUnOp(const MirTypeBuiltin &type, Op op,
+																llvm::Value *value) {
 		switch (type) {
 		case MirTypeBuiltin::Float16:
 		case MirTypeBuiltin::Float32:
@@ -515,7 +649,29 @@ private:
 			}
 		}
 
-		throw std::runtime_error("not implemented");
+		return nullptr;
+	}
+
+	llvm::Value *lowerUnOp(const MirTypeKind &type, Op op, llvm::Value *value) {
+		llvm::Value *out = nullptr;
+
+		// check for pointer
+		if (op == Op::BIT_AND /* ref */) {
+			// TODO: array
+			out = builder.CreateAlloca(value->getType());
+			builder.CreateStore(value, out);
+		} else if (op == Op::MUL /* deref */) {
+			auto ptrType = std::get<MirPointer>(type);
+			auto inner = ctx.get(ptrType.type);
+
+			out = builder.CreateLoad(inner, value);
+		}
+
+		if (auto it = std::get_if<MirTypeBuiltin>(&type); it && out == nullptr) {
+			out = lowerBuiltinUnOp(*it, op, value);
+		}
+
+		return out;
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirBinOp &mir) {
@@ -525,7 +681,7 @@ private:
 		const MirTypeKind &kind = ctx.ty.get(mir.lhs.type).kind;
 		const MirTypeBuiltin &builtin = std::get<MirTypeBuiltin>(kind);
 
-		return lowerBinOp(builtin, mir.op.variant, lhs, rhs);
+		return lowerBuiltinBinOp(builtin, mir.op.variant, lhs, rhs);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
@@ -537,9 +693,8 @@ private:
 		llvm::Value *value = lower(scope, mir.expr);
 
 		const MirTypeKind &kind = ctx.ty.get(mir.expr.type).kind;
-		const MirTypeBuiltin &builtin = std::get<MirTypeBuiltin>(kind);
 
-		return lowerUnOp(builtin, mir.op.variant, value);
+		return lowerUnOp(kind, mir.op.variant, value);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
@@ -569,17 +724,18 @@ private:
 				llvm::BasicBlock::Create(context, "post_loop", scope->fn);
 
 		// new scope
-		std::shared_ptr<LlScope> loopScope =
-				std::make_shared<LlScope>(scope, scope->fn);
+		std::shared_ptr<LlScope> loopCondScope =
+				std::make_shared<LlScope>(scope, scope->fn, loopCondBlock);
 
 		if (std::optional<MirExpr> c = mir.cond) {
-			llvm::Value *cond = lower(loopScope, *c);
+			llvm::Value *cond = lower(loopCondScope, *c);
 			builder.CreateCondBr(cond, loopBodyBlock, postLoopBlock);
-
-			loopScope = std::make_shared<LlScope>(loopScope);
 		} else {
 			builder.CreateBr(loopBodyBlock);
 		}
+
+		std::shared_ptr<LlScope> loopScope =
+				std::make_shared<LlScope>(loopCondScope, scope->fn, loopBodyBlock);
 
 		builder.SetInsertPoint(loopBodyBlock);
 
@@ -610,7 +766,7 @@ private:
 
 		// new scope
 		std::shared_ptr<LlScope> ifScope =
-				std::make_shared<LlScope>(scope, scope->fn);
+				std::make_shared<LlScope>(scope, scope->fn, ifBodyBlock);
 
 		llvm::Value *cond = lower(ifScope, mir.cond);
 		builder.CreateCondBr(cond, ifBodyBlock, postIfBlock);
@@ -632,16 +788,14 @@ private:
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirAssign &mir) {
 		llvm::Value *value = lower(scope, mir.expr);
-		llvm::PHINode *phi = builder.CreatePHI(value->getType(), 1);
 
-		phi->addIncoming(value, builder.GetInsertBlock());
-		scope->set(mir.ident, phi);
+		scope->set(mir.ident, value);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirReassign &mir) {
 		llvm::Value *value = lower(scope, mir.expr);
 
-		scope->reassign(mir.ident, value, builder.GetInsertBlock());
+		scope->reassign(mir.ident, value);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirReturn &mir) {

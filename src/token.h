@@ -195,7 +195,10 @@ enum class Op {
 
 	// not parsed, used by the parser
 	LPAREN,
-	RPAREN
+	RPAREN,
+
+	// used in `extern` functions for variadics
+	ELLIPSIS,
 };
 
 class TokenOp : public BaseToken {
@@ -250,7 +253,9 @@ public:
 	static std::optional<TokenOp> parse(BasicTokenizer &t) {
 		Op op;
 
-		if (t.tryConsume("+")) {
+		if (t.tryConsume("...")) {
+			op = Op::ELLIPSIS;
+		} else if (t.tryConsume("+")) {
 			op = Op::ADD;
 		} else if (t.tryConsume("-")) {
 			op = Op::SUB;
@@ -345,8 +350,10 @@ public:
 			return "(";
 		case Op::RPAREN:
 			return ")";
+		case Op::ELLIPSIS:
+			return "...";
 		default:
-			throw std::runtime_error("not implemented");
+			throw std::runtime_error("op str not implemented");
 		}
 	}
 };
@@ -456,7 +463,7 @@ public:
 		case Delim::COLON_COLON:
 			return "::";
 		default:
-			throw std::runtime_error("not implemented");
+			throw std::runtime_error("delim str not implemented");
 		}
 	}
 };
@@ -585,7 +592,7 @@ public:
 		case Keyword::SUPER:
 			return "super";
 		default:
-			throw std::runtime_error("not implemented");
+			throw std::runtime_error("keyword str not implemented");
 		}
 	}
 };

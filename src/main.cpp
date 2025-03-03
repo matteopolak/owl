@@ -5,6 +5,7 @@
 #include <fmt/core.h>
 #include <llvm/Pass.h>
 #include <llvm/Passes/OptimizationLevel.h>
+#include <llvm/Support/ManagedStatic.h>
 
 #include "llir.h"
 #include "mir.h"
@@ -12,7 +13,6 @@
 #include "tokenizer.h"
 
 int main() {
-	// path
 	std::filesystem::path p = "example.owl";
 	std::ifstream in(p, std::ifstream::in);
 
@@ -28,6 +28,8 @@ int main() {
 
 	Tokenizer t(source);
 
+	llvm::llvm_shutdown_obj lso;
+
 	try {
 		auto tokens = t.collect();
 		Parser p(tokens);
@@ -39,7 +41,9 @@ int main() {
 
 		llir.lower();
 		llir.module.print(llvm::errs(), nullptr);
-		llir.compile(llvm::OptimizationLevel::O3, llvm::ThinOrFullLTOPhase::None);
+		llir.compileObjectFile(llvm::OptimizationLevel::O3,
+													 llvm::ThinOrFullLTOPhase::None);
+		llir.link();
 	} catch (std::runtime_error &e) {
 		fmt::print("error: {}\n", e.what());
 		return 1;

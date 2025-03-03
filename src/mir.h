@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -102,7 +103,8 @@ private:
 
 class MirPath {
 public:
-	MirPath(MirIdent ident) : parts{ident} {}
+	MirPath(MirIdent ident, std::size_t refCount = 0)
+			: parts{ident}, refCount(refCount) {}
 	MirPath() = default;
 	MirPath(std::string ident) : parts{MirIdent{ident}} {}
 	template <typename... Args> MirPath(std::string ident, Args... args) {
@@ -111,8 +113,12 @@ public:
 	}
 
 	std::vector<MirIdent> parts;
+	std::size_t refCount = 0;
 
-	bool operator==(const MirPath &other) const { return parts == other.parts; }
+	bool operator==(const MirPath &other) const {
+		return refCount == other.refCount && parts == other.parts;
+	}
+
 	std::size_t hash() const {
 		std::size_t h = 0;
 
@@ -120,13 +126,13 @@ public:
 			h ^= part.hash();
 		}
 
-		return h;
+		return h ^ refCount;
 	}
 
 	static MirPath empty() { return MirPath{}; }
 
 	static MirPath from_hir(HirPath hir) {
-		MirPath path{MirIdent{hir.parts[0].value()}};
+		MirPath path{MirIdent{hir.parts[0].value()}, hir.refCount};
 
 		for (std::size_t i = 1; i < hir.parts.size(); i++) {
 			path.parts.push_back(MirIdent{hir.parts[i].value()});
@@ -206,10 +212,17 @@ public:
 	std::size_t size;
 };
 
-class MirFn;
+class MirFnSignature;
 
-using MirTypeKind =
-		std::variant<MirTypeBuiltin, MirStruct, MirArray, std::shared_ptr<MirFn>>;
+class MirPointer {
+public:
+	MirPointer(TypeHandle type) : type(type) {}
+
+	TypeHandle type;
+};
+
+using MirTypeKind = std::variant<MirTypeBuiltin, MirStruct, MirArray,
+																 MirPointer, std::shared_ptr<MirFnSignature>>;
 
 class MirType {
 public:
@@ -223,8 +236,8 @@ public:
 	}
 
 	// get fn if it's a function type
-	std::shared_ptr<MirFn> fn() const {
-		if (auto fn = std::get_if<std::shared_ptr<MirFn>>(&kind)) {
+	std::shared_ptr<MirFnSignature> fn() const {
+		if (auto fn = std::get_if<std::shared_ptr<MirFnSignature>>(&kind)) {
 			return *fn;
 		}
 
@@ -232,12 +245,15 @@ public:
 	}
 
 private:
-	std::string str(const TypeCtx &ctx, const std::shared_ptr<MirFn> &fn) const;
+	std::string str(const TypeCtx &ctx,
+									const std::shared_ptr<MirFnSignature> &fn) const;
 	std::string str(const TypeCtx &ctx, const MirArray &array) const;
 
 	std::string str(const TypeCtx &ctx, const MirStruct &type) const {
 		return fmt::format("struct {}", type.ident.value());
 	}
+
+	std::string str(const TypeCtx &ctx, const MirPointer &ptr) const;
 
 	std::string str(const TypeCtx &ctx, const MirTypeBuiltin &type) const {
 		switch (type) {
@@ -285,7 +301,7 @@ public:
 		scope = std::make_shared<Scope>(Scope{});
 
 		add(MirPath{"bool"}, MirType{MirTypeBuiltin::Bool});
-		add(MirPath{"char"}, MirType{MirTypeBuiltin::Char});
+		auto ch = add(MirPath{"char"}, MirType{MirTypeBuiltin::Char});
 
 		add(MirPath{"u8"}, MirType{MirTypeBuiltin::Uint8});
 		add(MirPath{"u16"}, MirType{MirTypeBuiltin::Uint16});
@@ -304,6 +320,7 @@ public:
 		add(MirPath{"f64"}, MirType{MirTypeBuiltin::Float64});
 
 		add(MirPath{"void"}, MirType{MirTypeBuiltin::Void});
+		add(MirPath{"string"}, MirType{MirPointer{ch}});
 	}
 
 	// takes an absolute path from the root of the program
@@ -316,6 +333,7 @@ public:
 
 		symbols.emplace(handle, type);
 		handles.emplace(path, handle);
+		inverseHandles.emplace(handle, path);
 
 		return handle;
 	}
@@ -328,6 +346,14 @@ public:
 		}
 
 		throw std::runtime_error(fmt::format("type not found: {}", path));
+	}
+
+	MirPath getPath(TypeHandle handle) const {
+		if (auto it = inverseHandles.find(handle); it != inverseHandles.end()) {
+			return it->second;
+		}
+
+		throw std::runtime_error("type not found");
 	}
 
 	const MirType &get(TypeHandle handle) const {
@@ -344,6 +370,7 @@ public:
 
 private:
 	std::unordered_map<MirPath, TypeHandle> handles;
+	std::unordered_map<TypeHandle, MirPath> inverseHandles;
 	std::unordered_map<TypeHandle, MirType> symbols;
 	MirPath anchor;
 };
@@ -352,6 +379,12 @@ std::string MirType::str(const TypeCtx &ctx, const MirArray &array) const {
 	auto inner = ctx.get(array.type).str(ctx);
 
 	return fmt::format("[{}; {}]", inner, array.size);
+}
+
+std::string MirType::str(const TypeCtx &ctx, const MirPointer &ptr) const {
+	auto inner = ctx.get(ptr.type).str(ctx);
+
+	return fmt::format("*{}", inner);
 }
 
 MirStructField MirStructField::from_hir(TypeCtx &ctx, HirTypedIdent hir) {
@@ -394,12 +427,12 @@ public:
 		} else if (std::holds_alternative<double>(value)) {
 			return ctx.get(MirPath{"f64"});
 		} else if (std::holds_alternative<std::string>(value)) {
-			return ctx.get(MirPath{"std", "string"});
+			return ctx.get(MirPath{"string"});
 		} else if (std::holds_alternative<bool>(value)) {
 			return ctx.get(MirPath{"bool"});
 		}
 
-		throw std::runtime_error("not implemented");
+		throw std::runtime_error("unknown literal type");
 	}
 };
 
@@ -451,8 +484,25 @@ public:
 
 	static MirExpr from_hir(TypeCtx &ctx, std::shared_ptr<HirUnOp> hir) {
 		auto expr = MirExpr::from_hir(ctx, hir->expr);
+		auto type = expr.type;
 
-		return MirExpr{std::make_shared<MirUnOp>(expr, hir->op), expr.type};
+		if (hir->op.variant == Op::BIT_AND /* ref */) {
+			auto path = ctx.getPath(expr.type);
+			path.refCount++;
+			type = ctx.add(path, MirType{MirPointer{expr.type}});
+		} else if (hir->op.variant == Op::MUL /* deref */) {
+			auto inner = ctx.get(expr.type);
+			auto ptr = std::get_if<MirPointer>(&inner.kind);
+
+			if (!ptr) {
+				throw std::runtime_error(fmt::format(
+						"cannot dereference non-pointer type `{}`", inner.str(ctx)));
+			}
+
+			type = ptr->type;
+		}
+
+		return MirExpr{std::make_shared<MirUnOp>(expr, hir->op), type};
 	}
 };
 
@@ -618,20 +668,20 @@ public:
 	}
 };
 
-class MirFn {
+class MirFnSignature {
 public:
-	MirFn(TypeHandle type, MirIdent ident, std::vector<MirFnParam> params,
-				MirBlock block, TypeHandle ret)
-			: type(type), ident(ident), params(params), block(block), ret(ret) {}
+	MirFnSignature(TypeHandle type, MirIdent ident,
+								 std::vector<MirFnParam> params, TypeHandle ret)
+			: type(type), ident(ident), params(params), ret(ret) {}
 
 	TypeHandle type;
 
 	MirIdent ident;
 	std::vector<MirFnParam> params;
-	MirBlock block;
 	TypeHandle ret;
+	bool variadic = false;
 
-	static MirFn from_hir(TypeCtx &ctx, HirFn hir) {
+	static MirFnSignature from_hir(TypeCtx &ctx, HirExtern hir) {
 		auto scope = ctx.scope;
 		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
 
@@ -646,17 +696,60 @@ public:
 
 		auto ident = MirIdent::from_hir(hir.ident);
 		auto ret = ctx.get(MirPath::from_hir(
-				hir.ret.value_or(HirPath{Span{}, {TokenIdent{Span{}, "void"}}})));
+				hir.ret.value_or(HirPath{Span{}, {TokenIdent{Span{}, "void"}}, 0})));
 
-		auto fn = MirFn{ret, ident, params, MirBlock{}, ret};
-		auto ty = ctx.add(ident, MirType{std::make_shared<MirFn>(fn)});
+		auto sig = MirFnSignature{ret, ident, params, ret};
+		sig.variadic = hir.variadic;
+		auto ty = ctx.add(ident, MirType{std::make_shared<MirFnSignature>(sig)});
 
-		fn.type = ty;
+		sig.type = ty;
+		scope->add(ident, ty);
+
+		return sig;
+	}
+
+	static MirFnSignature from_hir(TypeCtx &ctx, HirFn hir) {
+		auto scope = ctx.scope;
+		ctx.scope = std::make_shared<Scope>(Scope{ctx.scope});
+
+		std::vector<MirFnParam> params;
+
+		for (auto &param : hir.params) {
+			auto p = MirFnParam::from_hir(ctx, param);
+
+			ctx.scope->add(p.ident, p.type);
+			params.push_back(p);
+		}
+
+		auto ident = MirIdent::from_hir(hir.ident);
+		auto ret = ctx.get(MirPath::from_hir(
+				hir.ret.value_or(HirPath{Span{}, {TokenIdent{Span{}, "void"}}, 0})));
+
+		auto sig = MirFnSignature{ret, ident, params, ret};
+		auto ty = ctx.add(ident, MirType{std::make_shared<MirFnSignature>(sig)});
+
+		sig.type = ty;
 
 		scope->add(ident, ty);
-		fn.block = MirBlock::from_hir(ctx, hir.block);
 
-		return fn;
+		return sig;
+	}
+};
+
+class MirFn : public MirFnSignature {
+public:
+	MirFn(TypeHandle type, MirIdent ident, std::vector<MirFnParam> params,
+				TypeHandle ret, MirBlock block)
+			: MirFnSignature(type, ident, params, ret), block(block) {}
+	MirFn(MirFnSignature sig, MirBlock block)
+			: MirFnSignature(sig), block(block) {}
+
+	MirBlock block;
+
+	static MirFn from_hir(TypeCtx &ctx, HirFn hir) {
+		auto sig = MirFnSignature::from_hir(ctx, hir);
+
+		return MirFn{sig, MirBlock::from_hir(ctx, hir.block)};
 	}
 };
 
@@ -664,12 +757,12 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 	auto path = MirPath::from_hir(hir.path);
 
 	if (path.parts.size() != 1) {
-		throw std::runtime_error("not implemented yet.");
+		throw std::runtime_error("modules not implemented");
 	}
 
 	auto fnType = ctx.scope->get(path.parts[0]);
 	auto maybeFn = ctx.get(fnType);
-	std::shared_ptr<MirFn> fn = maybeFn.fn();
+	std::shared_ptr<MirFnSignature> fn = maybeFn.fn();
 
 	if (!fn) {
 		throw std::runtime_error(
@@ -677,8 +770,10 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 	}
 
 	if (hir.args.size() != fn->params.size()) {
-		throw std::runtime_error(fmt::format("expected {} arguments, found {}",
-																				 fn->params.size(), hir.args.size()));
+		if (!fn->variadic || hir.args.size() < fn->params.size()) {
+			throw std::runtime_error(fmt::format("expected {} arguments, found {}",
+																					 fn->params.size(), hir.args.size()));
+		}
 	}
 
 	std::vector<MirExpr> args;
@@ -702,7 +797,7 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 }
 
 std::string MirType::str(const TypeCtx &ctx,
-												 const std::shared_ptr<MirFn> &fn) const {
+												 const std::shared_ptr<MirFnSignature> &fn) const {
 	std::string formatted = "fn(";
 
 	for (std::size_t i = 0; i < fn->params.size(); i++) {
@@ -724,7 +819,7 @@ MirExpr MirExpr::from_hir(TypeCtx &ctx, std::shared_ptr<HirFnCall> hir) {
 	auto handle = ctx.get(call.path);
 	auto type = ctx.get(handle);
 
-	if (auto fn = std::get_if<std::shared_ptr<MirFn>>(&type.kind)) {
+	if (auto fn = std::get_if<std::shared_ptr<MirFnSignature>>(&type.kind)) {
 		auto ret = (*fn)->ret;
 
 		return MirExpr{std::make_shared<MirFnCall>(call), ret};
@@ -753,7 +848,7 @@ public:
 		auto mir = MirIf{cond, block};
 
 		if (auto block = hir->elseBlock) {
-			throw std::runtime_error("not implemented");
+			throw std::runtime_error("else block not implemented");
 		}
 
 		return mir;
@@ -840,8 +935,8 @@ private:
 	}
 };
 
-using Mir = std::variant<MirFn, MirStruct, MirLit, MirExpr, MirLoop, MirIf,
-												 MirAssign, MirReassign, MirReturn>;
+using Mir = std::variant<MirFn, MirFnSignature, MirStruct, MirLit, MirExpr,
+												 MirLoop, MirIf, MirAssign, MirReassign, MirReturn>;
 
 MirBlockItem MirBlock::lower(TypeCtx &ctx, HirAssign hir) {
 	return MirAssign::from_hir(ctx, hir);
@@ -897,7 +992,7 @@ public:
 		auto mainHandle = ctx.get(MirPath{"main"});
 		auto main = ctx.get(mainHandle);
 
-		if (auto fn = std::get_if<std::shared_ptr<MirFn>>(&main.kind)) {
+		if (auto fn = std::get_if<std::shared_ptr<MirFnSignature>>(&main.kind)) {
 			if ((*fn)->params.size() != 0) {
 				throw std::runtime_error("main function must have no arguments");
 			}
@@ -924,7 +1019,7 @@ public:
 	Mir lower(HirReassign hir) { throw std::runtime_error("not allowed here"); }
 	Mir lower(HirReturn hir) { throw std::runtime_error("not allowed here"); }
 	Mir lower(HirImport hir) { throw std::runtime_error("not implemented"); }
-	Mir lower(HirExtern hir) { throw std::runtime_error("not implemented"); }
+	Mir lower(HirExtern hir) { return MirFnSignature::from_hir(ctx, hir); }
 
 private:
 	std::vector<Hir> hir;
