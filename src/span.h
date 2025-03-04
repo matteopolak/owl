@@ -21,7 +21,7 @@ public:
 
 	Span merge(Span other) { return {start, other.end}; }
 
-	std::string_view of(std::string_view source) {
+	std::string_view of(std::string_view source) const {
 		return source.substr(start.index, end.index - start.index);
 	}
 

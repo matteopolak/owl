@@ -1,14 +1,8 @@
 extern fn printf(fmt: *char, ...): i32;
 
 fn main(): i32 {
-	let a: i32 = &1;
+  let a = 1;
 
-	if (*a == 2) {
-		a = &3;
-	}
-
-	printf("a: %d\n", *a);
-
-	return 1;
+  a = true;
 }
 

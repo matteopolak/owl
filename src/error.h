@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <exception>
 #include <sstream>
 #include <string>
@@ -24,46 +25,34 @@ public:
 		output << "error: " << message << "\n";
 
 		for (const auto &[span, note] : notes) {
-			std::size_t startLine = span.start.line;
-			std::size_t endLine = span.end.line;
+			std::size_t currentLine = std::max<std::size_t>(span.start.line - 2, 1);
+			std::size_t index = span.start.index - span.start.column;
 
-			fmt::print("startLine: {}\n", startLine);
+			// go back span.start.line - currentLine lines in the index
+			// use rfind?
+			for (std::size_t i = 0; i < span.start.line - currentLine; i++) {
+				index = source.rfind('\n', index - 1);
+			}
 
-			std::size_t minLine = startLine > 2 ? startLine - 2 : 1;
-
-			std::size_t lineStartIndex = span.start.index - span.start.column;
-
-			std::size_t currentLine = minLine;
-			std::size_t currentIndex = lineStartIndex;
-
-			while (currentLine <= endLine && currentIndex < source.size()) {
-				std::size_t lineEndIndex = source.find('\n', currentIndex);
+			while (currentLine <= span.end.line && index < source.size()) {
+				std::size_t lineEndIndex = source.find('\n', index);
 				if (lineEndIndex == std::string::npos) {
 					lineEndIndex = source.size();
 				}
 
-				std::string_view line =
-						source.substr(currentIndex, lineEndIndex - currentIndex);
+				std::string_view line = source.substr(index, lineEndIndex - index);
 
 				output << currentLine << " | " << line << "\n";
 
-				if (currentLine >= startLine && currentLine <= endLine) {
-					std::size_t highlightStart =
-							(currentLine == startLine) ? span.start.column : 0;
-					std::size_t highlightEnd =
-							(currentLine == endLine) ? span.end.column : line.size();
+				if (currentLine == span.end.line) {
+					std::size_t length = span.end.column - span.start.column;
 
-					output << std::string(std::to_string(currentLine).size() + 3 +
-																		highlightStart,
-																' ')
-								 << std::string(highlightEnd - highlightStart, '^') << "\n";
+					output << "    " << std::string(span.start.column, ' ')
+								 << std::string(length, '^') << "\n"
+								 << "    note: " << note << "\n";
 				}
 
-				if (currentLine == startLine) {
-					output << "    note: " << note << "\n";
-				}
-
-				currentIndex = lineEndIndex + 1;
+				index = lineEndIndex + 1;
 				currentLine++;
 			}
 		}

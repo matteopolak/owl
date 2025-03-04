@@ -245,19 +245,32 @@ public:
 
 class HirReassign : public BaseHir {
 public:
-	HirReassign(Span span, TokenIdent ident, TokenOp eq, HirExpr expr)
-			: BaseHir(span), ident(ident), eq(eq), expr(std::move(expr)) {}
+	HirReassign(Span span, TokenIdent ident, std::size_t derefCount, TokenOp eq,
+							HirExpr expr)
+			: BaseHir(span), ident(ident), derefCount(derefCount), eq(eq),
+				expr(std::move(expr)) {}
 
 	TokenIdent ident;
+	std::size_t derefCount = 0;
 	TokenOp eq;
 	HirExpr expr;
 
 	static HirReassign parse(BasicParser &t) {
+		std::size_t derefCount = 0;
+
+		while (auto op = t.tryConsume<TokenOp>(Op::MUL, Op::POW)) {
+			if (op->variant == Op::POW) {
+				derefCount += 2;
+			} else {
+				derefCount++;
+			}
+		}
+
 		auto ident = t.consume<TokenIdent>();
 		auto eq = t.consume<TokenOp>(Op::EQ);
 		auto expr = HirExpr::parse(t);
 
-		return HirReassign{ident.span().merge(expr.span()), ident, eq,
+		return HirReassign{ident.span().merge(expr.span()), ident, derefCount, eq,
 											 std::move(expr)};
 	}
 

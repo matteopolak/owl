@@ -97,8 +97,8 @@ public:
 			return parent->get(ident);
 		}
 
-		throw std::runtime_error(
-				fmt::format("variable '{}' not found", ident.value()));
+		throw Error(fmt::format("cannot access variable `{}`", ident.ident),
+								{{ident.span, "variable not found"}});
 	}
 
 private:
@@ -513,8 +513,10 @@ public:
 			auto ptr = std::get_if<MirPointer>(&inner.kind);
 
 			if (!ptr) {
-				throw std::runtime_error(fmt::format(
-						"cannot dereference non-pointer type `{}`", inner.str(ctx)));
+				throw Error(fmt::format("cannot dereference non-pointer type `{}`",
+																inner.str(ctx)),
+										{{expr.span(),
+											fmt::format("expected *_, found {}", inner.str(ctx))}});
 			}
 
 			auto path = ctx.getPath(expr.type);
@@ -628,12 +630,27 @@ public:
 
 		if (ctx.scope->get(path) != expr.type) {
 			auto lhs = ctx.get(ctx.scope->get(path));
+
+			if (hir.derefCount > 0) {
+				auto ptr = std::get_if<MirPointer>(&lhs.kind);
+
+				if (ptr) {
+					if (hir.derefCount > ptr->refCount) {
+						auto nonPtr = ctx.get(ptr->type);
+
+						throw std::runtime_error(fmt::format(
+								"cannot dereference non-pointer type `{}`", nonPtr.str(ctx)));
+					}
+				}
+			}
+
 			auto rhs = ctx.get(expr.type);
 
-			throw std::runtime_error(
-					fmt::format("type mismatch for re-assignment of variable `{}`. "
-											"expected {}, found {}",
-											path.value(), lhs.str(ctx), rhs.str(ctx)));
+			throw Error(
+					fmt::format("type mismatch for re-assignment of variable `{}`. ",
+											path.value()),
+					{{expr.span(),
+						fmt::format("expected {}, found {}", lhs.str(ctx), rhs.str(ctx))}});
 		}
 
 		return MirReassign{path, expr};
@@ -813,14 +830,19 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 	std::shared_ptr<MirFnSignature> fn = maybeFn.fn();
 
 	if (!fn) {
-		throw std::runtime_error(
-				fmt::format("expected function, found {}", maybeFn.str(ctx)));
+		throw Error(fmt::format("cannot find function `{}` in this scope", path),
+								{{hir.path.span(), "not found in this scope"}});
 	}
 
 	if (hir.args.size() != fn->params.size()) {
 		if (!fn->variadic || hir.args.size() < fn->params.size()) {
-			throw std::runtime_error(fmt::format("expected {} arguments, found {}",
-																					 fn->params.size(), hir.args.size()));
+			throw Error(
+					fmt::format(
+							"expected {} argument{}, found {} in call to function `{}`",
+							fn->params.size(), fn->params.size() == 1 ? "" : "s",
+							hir.args.size(), path),
+					{{hir.lparen.span().merge(hir.rparen.span()),
+						"incorrect number of arguments here"}});
 		}
 	}
 
@@ -833,9 +855,11 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 			auto expected = ctx.get(fn->params[i].type);
 			auto given = ctx.get(arg.type);
 
-			throw std::runtime_error(
-					fmt::format("type mismatch for argument {}. expected {}, found {}", i,
-											expected.str(ctx), given.str(ctx)));
+			throw Error(
+					fmt::format("mismatched types for argument in call to function `{}`",
+											fn->params[i].ident.value(), path),
+					{{arg.span(), fmt::format("expected {}, found {}", expected.str(ctx),
+																		given.str(ctx))}});
 		}
 
 		args.push_back(arg);
