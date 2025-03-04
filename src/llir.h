@@ -31,6 +31,13 @@ public:
 
 	llvm::Function *fn = nullptr;
 	llvm::BasicBlock *block = nullptr;
+	llvm::BasicBlock *loopCondBlock = nullptr;
+	llvm::BasicBlock *loopBodyBlock = nullptr;
+	llvm::BasicBlock *postLoopBlock = nullptr;
+
+	llvm::BasicBlock *ifCondBlock = nullptr;
+	llvm::BasicBlock *ifBodyBlock = nullptr;
+	llvm::BasicBlock *postIfBlock = nullptr;
 
 	llvm::Value *get(MirIdent ident) {
 		if (auto it = variables.find(ident); it != variables.end()) {
@@ -80,12 +87,11 @@ public:
 	void reassign(MirIdent ident, llvm::Value *value) {
 		get(ident); // ensure it exists
 
-		// unconditionally add it to the local scope, but don't set `local` since it
 		// potentially wasn't declared here
 		variables[ident] = value;
 
-		// in whichever block it's declared in, we need to replace it with a phi
-		// node
+		// in whichever block it's used in next, we need to replace it with a
+		// phinode
 		LlScope &scope = getScope(ident);
 
 		// if the scope already contains a PHINode, then we just need to replace the
@@ -100,14 +106,16 @@ public:
 			// if it's local, then we don't want to do anything (we already set the
 			// variable to a value)
 		} else if (!local.contains(ident)) {
-			llvm::PHINode *phi2 = llvm::PHINode::Create(value->getType(), 2,
-																									ident.value(), scope.block);
+			if (postIfBlock) {
+				llvm::PHINode *phi2 = llvm::PHINode::Create(value->getType(), 2,
+																										ident.value(), postIfBlock);
 
-			node->replaceAllUsesWith(phi2);
-			phi2->addIncoming(node, scope.block);
-			phi2->addIncoming(value, block);
+				// node->replaceAllUsesWith(phi2);
+				phi2->addIncoming(node, scope.block);
+				phi2->addIncoming(value, block);
 
-			scope.variables[ident] = phi;
+				scope.variables[ident] = phi2;
+			}
 		}
 	}
 
@@ -123,10 +131,10 @@ private:
 
 class LlTypeCtx {
 public:
-	LlTypeCtx(const TypeCtx &ty, llvm::LLVMContext &ctx, llvm::Module &module)
+	LlTypeCtx(TypeCtx &ty, llvm::LLVMContext &ctx, llvm::Module &module)
 			: ty(ty), ctx(ctx), dataLayout(module.getDataLayout()) {}
 
-	const TypeCtx &ty;
+	TypeCtx &ty;
 
 	template <typename T> T *get(TypeHandle handle) {
 		if (auto it = types.find(handle); it != types.end()) {
@@ -188,8 +196,15 @@ private:
 		throw std::runtime_error("builtin type not implemented");
 	}
 
-	llvm::Type *get(const MirPointer &ptr) {
-		llvm::Type *type = get(ptr.type);
+	llvm::Type *get(const MirPointer &ptr) { return get(ptr, ptr.refCount); }
+
+	llvm::Type *get(const MirPointer &ptr, std::size_t refCount) {
+		if (refCount == 0) {
+			return get(ptr.type);
+		}
+
+		refCount -= 1;
+		llvm::Type *type = get(ptr, refCount);
 
 		return type->getPointerTo();
 	}
@@ -246,31 +261,6 @@ public:
 		if (!mainFunction) {
 			llvm::errs() << "Error: main() function not found in the module!\n";
 			return;
-		}
-
-		llvm::FunctionType *exitType =
-				llvm::FunctionType::get(llvm::Type::getVoidTy(context),
-																{llvm::Type::getInt32Ty(context)}, false);
-		llvm::FunctionCallee exitFunction =
-				module.getOrInsertFunction("exit", exitType);
-
-		llvm::FunctionType *startType =
-				llvm::FunctionType::get(llvm::Type::getVoidTy(context), false);
-		llvm::Function *startFunction = llvm::Function::Create(
-				startType, llvm::Function::ExternalLinkage, "_start", module);
-
-		llvm::BasicBlock *entry =
-				llvm::BasicBlock::Create(context, "entry", startFunction);
-		builder.SetInsertPoint(entry);
-
-		llvm::Value *result = builder.CreateCall(mainFunction, {}, "main_ret");
-
-		builder.CreateCall(exitFunction, {result});
-
-		builder.CreateUnreachable();
-
-		if (llvm::verifyFunction(*startFunction, &llvm::errs())) {
-			llvm::errs() << "Error: _start function verification failed!\n";
 		}
 	}
 
@@ -346,35 +336,38 @@ public:
 
 	void link() {
 		std::string linker;
-
-		std::vector<std::string> args = {linker, "-o", "", "target/output.o"};
+		std::vector<std::string> args;
 		std::string outputBinary = "target/output";
 
 		if (llvm::Triple(llvm::sys::getProcessTriple()).isOSWindows()) {
-			args.push_back("/entry:main");
-			args.push_back("/subsystem:console");
-			args.push_back("msvcrt.lib");
-
-			outputBinary = "target/output.exe";
 			linker = "link.exe";
+			args = {linker,				"/entry:_start",				"/subsystem:console",
+							"msvcrt.lib", "/out:" + outputBinary, "target/output.o"};
 		} else if (llvm::Triple(llvm::sys::getProcessTriple()).isMacOSX()) {
-			args.push_back(
-					"-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib");
-			args.push_back("-lc");
-			args.push_back("-lSystem");
-
 			linker = "ld";
+			args = {linker,
+							"-o",
+							outputBinary,
+							"target/output.o",
+							"-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib",
+							"-lc",
+							"-lSystem"};
 		} else {
-			args.push_back("-L/lib");
-			args.push_back("-L/usr/lib");
-			args.push_back("-lc");
-			args.push_back("-dynamic-linker");
-			args.push_back("/lib64/ld-linux-x86-64.so.2");
-
+			// Linux
 			linker = "/usr/bin/ld";
+			args = {linker,
+							"-o",
+							outputBinary,
+							"target/output.o",
+							"-L/lib",
+							"-L/usr/lib",
+							"-lc",
+							"/usr/lib/x86_64-linux-gnu/crt1.o",
+							"/usr/lib/x86_64-linux-gnu/crti.o",
+							"-dynamic-linker",
+							"/lib64/ld-linux-x86-64.so.2",
+							"/usr/lib/x86_64-linux-gnu/crtn.o"};
 		}
-
-		args[2] = outputBinary;
 
 		std::vector<llvm::StringRef> execArgs;
 		for (const auto &arg : args) {
@@ -403,7 +396,7 @@ private:
 		llvm::FunctionType *ty = ctx.get<llvm::FunctionType>(mir.type);
 
 		llvm::Function *fn = llvm::Function::Create(
-				ty, llvm::Function::InternalLinkage, mir.ident.value(), module);
+				ty, llvm::Function::ExternalLinkage, mir.ident.value(), module);
 
 		llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", fn);
 		std::shared_ptr<LlScope> entryScope =
@@ -511,6 +504,9 @@ private:
 				return builder.CreateFCmpOLT(lhs, rhs);
 			case Op::GT:
 				return builder.CreateFCmpOGT(lhs, rhs);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented binop for float: {}", op));
 			}
 		case MirTypeBuiltin::Int8:
 		case MirTypeBuiltin::Int16:
@@ -555,6 +551,9 @@ private:
 				return builder.CreateShl(lhs, rhs);
 			case Op::BIT_RSHIFT:
 				return builder.CreateLShr(lhs, rhs);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented binop for int: {}", op));
 			}
 		case MirTypeBuiltin::Uint8:
 		case MirTypeBuiltin::Uint16:
@@ -599,6 +598,9 @@ private:
 				return builder.CreateShl(lhs, rhs);
 			case Op::BIT_RSHIFT:
 				return builder.CreateLShr(lhs, rhs);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented binop for uint: {}", op));
 			}
 		case MirTypeBuiltin::Bool:
 			switch (op) {
@@ -606,7 +608,26 @@ private:
 				return builder.CreateLogicalAnd(lhs, rhs);
 			case Op::OR:
 				return builder.CreateLogicalOr(lhs, rhs);
+			case Op::EQEQ:
+				return builder.CreateICmpEQ(lhs, rhs);
+			case Op::NEQ:
+				return builder.CreateICmpNE(lhs, rhs);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented binop for bool: {}", op));
 			}
+		default:
+			throw std::runtime_error("not implemented");
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Value *lowerBinOp(const MirTypeKind &kind, Op op, llvm::Value *lhs,
+													llvm::Value *rhs) {
+
+		if (auto it = std::get_if<MirTypeBuiltin>(&kind); it) {
+			return lowerBuiltinBinOp(*it, op, lhs, rhs);
 		}
 
 		throw std::runtime_error("not implemented");
@@ -621,6 +642,9 @@ private:
 			switch (op) {
 			case Op::SUB:
 				return builder.CreateFNeg(value);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented unop for float: {}", op));
 			}
 		case MirTypeBuiltin::Int8:
 		case MirTypeBuiltin::Int16:
@@ -631,6 +655,9 @@ private:
 				return builder.CreateNeg(value);
 			case Op::BIT_NOT:
 				return builder.CreateNot(value);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented unop for int: {}", op));
 			}
 		case MirTypeBuiltin::Uint8:
 		case MirTypeBuiltin::Uint16:
@@ -641,47 +668,63 @@ private:
 				return builder.CreateNeg(value);
 			case Op::BIT_NOT:
 				return builder.CreateNot(value);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented unop for uint: {}", op));
 			}
 		case MirTypeBuiltin::Bool:
 			switch (op) {
 			case Op::NOT:
 				return builder.CreateNot(value);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented unop for bool: {}", op));
 			}
+		default:
+			throw std::runtime_error("not implemented");
 		}
 
 		return nullptr;
 	}
 
 	llvm::Value *lowerUnOp(const MirTypeKind &type, Op op, llvm::Value *value) {
-		llvm::Value *out = nullptr;
-
 		// check for pointer
 		if (op == Op::BIT_AND /* ref */) {
 			// TODO: array
-			out = builder.CreateAlloca(value->getType());
+			llvm::Value *out = builder.CreateAlloca(value->getType());
 			builder.CreateStore(value, out);
+
+			return out;
 		} else if (op == Op::MUL /* deref */) {
 			auto ptrType = std::get<MirPointer>(type);
-			auto inner = ctx.get(ptrType.type);
+			ptrType.refCount -= 1;
+			auto path = ctx.ty.getPath(ptrType.type);
+			path.refCount = ptrType.refCount;
+			auto ty = ctx.ty.get(path);
+			auto inner = ctx.get(ty);
 
-			out = builder.CreateLoad(inner, value);
+			return builder.CreateLoad(inner, value);
 		}
 
-		if (auto it = std::get_if<MirTypeBuiltin>(&type); it && out == nullptr) {
-			out = lowerBuiltinUnOp(*it, op, value);
+		if (auto it = std::get_if<MirTypeBuiltin>(&type); it) {
+			return lowerBuiltinUnOp(*it, op, value);
 		}
 
-		return out;
+		throw std::runtime_error("not implemented");
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirBinOp &mir) {
 		llvm::Value *lhs = lower(scope, mir.lhs);
 		llvm::Value *rhs = lower(scope, mir.rhs);
 
-		const MirTypeKind &kind = ctx.ty.get(mir.lhs.type).kind;
-		const MirTypeBuiltin &builtin = std::get<MirTypeBuiltin>(kind);
+		if (mir.lhs.type != mir.rhs.type) {
+			throw std::runtime_error("type mismatch");
+		}
 
-		return lowerBuiltinBinOp(builtin, mir.op.variant, lhs, rhs);
+		// both the same type
+		const MirTypeKind &kind = ctx.ty.get(mir.lhs.type).kind;
+
+		return lowerBinOp(kind, mir.op.variant, lhs, rhs);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
@@ -727,6 +770,10 @@ private:
 		std::shared_ptr<LlScope> loopCondScope =
 				std::make_shared<LlScope>(scope, scope->fn, loopCondBlock);
 
+		loopCondScope->loopCondBlock = loopCondBlock;
+		loopCondScope->loopBodyBlock = loopBodyBlock;
+		loopCondScope->postLoopBlock = postLoopBlock;
+
 		if (std::optional<MirExpr> c = mir.cond) {
 			llvm::Value *cond = lower(loopCondScope, *c);
 			builder.CreateCondBr(cond, loopBodyBlock, postLoopBlock);
@@ -736,6 +783,10 @@ private:
 
 		std::shared_ptr<LlScope> loopScope =
 				std::make_shared<LlScope>(loopCondScope, scope->fn, loopBodyBlock);
+
+		loopScope->loopCondBlock = loopCondBlock;
+		loopScope->loopBodyBlock = loopBodyBlock;
+		loopScope->postLoopBlock = postLoopBlock;
 
 		builder.SetInsertPoint(loopBodyBlock);
 
@@ -752,12 +803,6 @@ private:
 			throw std::runtime_error("no block");
 		}
 
-		llvm::BasicBlock *ifCondBlock =
-				llvm::BasicBlock::Create(context, "if_cond", scope->fn);
-
-		builder.CreateBr(ifCondBlock);
-		builder.SetInsertPoint(ifCondBlock);
-
 		llvm::BasicBlock *ifBodyBlock =
 				llvm::BasicBlock::Create(context, "if_body", scope->fn);
 
@@ -767,6 +812,9 @@ private:
 		// new scope
 		std::shared_ptr<LlScope> ifScope =
 				std::make_shared<LlScope>(scope, scope->fn, ifBodyBlock);
+
+		ifScope->ifBodyBlock = ifBodyBlock;
+		ifScope->postIfBlock = postIfBlock;
 
 		llvm::Value *cond = lower(ifScope, mir.cond);
 		builder.CreateCondBr(cond, ifBodyBlock, postIfBlock);

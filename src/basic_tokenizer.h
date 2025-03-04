@@ -8,7 +8,9 @@
 
 class BasicTokenizer {
 public:
-	BasicTokenizer(std::string source) : source(source) {}
+	BasicTokenizer(std::string source) : source_(source) {}
+
+	std::string_view source() { return source_; }
 
 	inline void startSpan() { start_ = pos; }
 	inline Span endSpan() { return Span{start_, pos}; }
@@ -40,7 +42,7 @@ public:
 			throw std::runtime_error("unexpected end of input");
 		}
 
-		char c = source[pos.index];
+		char c = source_[pos.index];
 
 		if (base == 10 && !std::isdigit(c)) {
 			throw std::runtime_error("expected digit");
@@ -58,7 +60,7 @@ public:
 			return std::nullopt;
 		}
 
-		return source[pos.index];
+		return source_[pos.index];
 	}
 
 	char nextChar() {
@@ -66,7 +68,7 @@ public:
 			throw std::runtime_error("unexpected end of input");
 		}
 
-		char c = source[pos.index];
+		char c = source_[pos.index];
 		pos.index++;
 
 		if (c == '\n') {
@@ -80,14 +82,14 @@ public:
 	}
 
 	bool startsWith(std::string prefix) {
-		return std::string_view(source).substr(pos.index).starts_with(prefix);
+		return std::string_view(source_).substr(pos.index).starts_with(prefix);
 	}
 
-	bool isEmpty() { return pos.index >= source.size(); }
+	bool isEmpty() { return pos.index >= source_.size(); }
 
 	void skipWhitespace() {
-		while (!isEmpty() && std::isspace(source[pos.index])) {
-			if (source[pos.index] == '\n') {
+		while (!isEmpty() && std::isspace(source_[pos.index])) {
+			if (source_[pos.index] == '\n') {
 				pos.line++;
 				pos.column = 0;
 			} else {
@@ -98,7 +100,7 @@ public:
 	}
 
 private:
-	std::string source;
+	std::string source_;
 	Position pos = {.line = 1, .column = 0, .index = 0};
 	Position start_;
 };

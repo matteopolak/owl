@@ -11,6 +11,7 @@
 class Parser : public BasicParser {
 public:
 	std::vector<Hir> collect() {
+		tokens = tokenizer.collect();
 		std::vector<Hir> nodes;
 
 		while (auto hir = next()) {

@@ -409,7 +409,6 @@ public:
 		std::vector<HirStmt> stmts;
 
 		while (!rbrace) {
-			auto next = t.tokens[t.index];
 			auto stmt = HirStmt::parse(t);
 
 			if (stmt.needsSemi()) {
@@ -829,7 +828,7 @@ template <int P> HirExpr HirExpr::parse(BasicParser &t) {
 	return expr;
 }
 
-template <> HirExpr HirExpr::parse<9>(BasicParser &t) {
+template <> HirExpr HirExpr::parse<13>(BasicParser &t) {
 	if (auto lit = t.tryConsume<TokenLit>()) {
 		return HirExpr{lit->span(), *lit};
 	}
@@ -851,9 +850,26 @@ template <> HirExpr HirExpr::parse<9>(BasicParser &t) {
 		return expr;
 	}
 
-	if (auto unOp =
-					t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND, Op::MUL)) {
-		auto expr = HirExpr::parse<9>(t);
+	if (auto unOp = t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND, Op::MUL,
+																				Op::POW)) {
+		auto expr = HirExpr::parse<13>(t);
+
+		// convert to 2 BIT_ANDs
+		if (unOp->variant == Op::POW) {
+			Span span = unOp->span();
+			span.start.index++;
+			span.start.column++;
+			auto localUnOp = TokenOp{span, Op::MUL};
+
+			Span otherSpan = unOp->span();
+			otherSpan.end.index--;
+			otherSpan.end.column--;
+			unOp = TokenOp{otherSpan, Op::MUL};
+
+			expr = HirExpr{unOp->span().merge(expr.span()),
+										 std::make_shared<HirUnOp>(
+												 localUnOp.span().merge(expr.span()), localUnOp, expr)};
+		}
 
 		return HirExpr{unOp->span().merge(expr.span()),
 									 std::make_shared<HirUnOp>(unOp->span().merge(expr.span()),

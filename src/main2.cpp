@@ -44,7 +44,8 @@ int main() {
 			builder.CreateAdd(builder.getInt32(10), builder.getInt32(5), "sum");
 
 	// Create a format string for `printf`
-	llvm::Value *formatStr = builder.CreateGlobalStringPtr("%d\n", "formatStr");
+	llvm::Value *formatStr =
+			builder.CreateGlobalStringPtr("hello world %d\n", "formatStr");
 
 	// Call `printf` to print the sum
 	builder.CreateCall(printfFunc, {formatStr, sum});
@@ -57,33 +58,6 @@ int main() {
 		llvm::errs() << "Error: Module verification failed!\n";
 		return 1;
 	}
-
-	// Create a PassBuilder
-	llvm::PassBuilder passBuilder;
-
-	// Create analysis managers
-	llvm::LoopAnalysisManager loopAnalysisManager;
-	llvm::FunctionAnalysisManager functionAnalysisManager;
-	llvm::CGSCCAnalysisManager cgsccAnalysisManager;
-	llvm::ModuleAnalysisManager moduleAnalysisManager;
-
-	// Register analyses
-	passBuilder.registerModuleAnalyses(moduleAnalysisManager);
-	passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
-	passBuilder.registerFunctionAnalyses(functionAnalysisManager);
-	passBuilder.registerLoopAnalyses(loopAnalysisManager);
-	passBuilder.crossRegisterProxies(loopAnalysisManager, functionAnalysisManager,
-																	 cgsccAnalysisManager, moduleAnalysisManager);
-
-	// Create a ModulePassManager
-	llvm::ModulePassManager modulePassManager;
-
-	// Add optimization passes
-	modulePassManager.addPass(passBuilder.buildModuleSimplificationPipeline(
-			llvm::OptimizationLevel::O3, llvm::ThinOrFullLTOPhase::None));
-
-	// Run the passes on the module
-	modulePassManager.run(module, moduleAnalysisManager);
 
 	std::error_code error;
 	llvm::raw_fd_ostream file("example.bc", error, llvm::sys::fs::OF_None);

@@ -124,6 +124,8 @@ private:
 					value += "\t";
 				} else if (t.tryConsume("\"")) {
 					value += "\"";
+				} else if (t.tryConsume("0")) {
+					value += "\0";
 				} else {
 					throw std::runtime_error("invalid escape sequence");
 				}
@@ -325,7 +327,7 @@ public:
 		case Op::MOD:
 			return "%";
 		case Op::POW:
-			return "^";
+			return "**";
 		case Op::AND:
 			return "&&";
 		case Op::OR:
@@ -346,6 +348,18 @@ public:
 			return "<=";
 		case Op::GTE:
 			return ">=";
+		case Op::BIT_AND:
+			return "&";
+		case Op::BIT_OR:
+			return "|";
+		case Op::BIT_XOR:
+			return "^";
+		case Op::BIT_NOT:
+			return "~";
+		case Op::BIT_LSHIFT:
+			return "<<";
+		case Op::BIT_RSHIFT:
+			return ">>";
 		case Op::LPAREN:
 			return "(";
 		case Op::RPAREN:

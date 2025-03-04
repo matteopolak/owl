@@ -71,9 +71,9 @@ private:
 		}
 
 		// comment
-		// if (auto comment = TokenComment::parse(*this)) {
-		// 	return *comment;
-		// }
+		if (auto comment = TokenComment::parse(*this)) {
+			// do nothing with it
+		}
 
 		// op
 		if (auto op = TokenOp::parse(*this)) {

@@ -7,6 +7,7 @@
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Support/ManagedStatic.h>
 
+#include "error.h"
 #include "llir.h"
 #include "mir.h"
 #include "parser.h"
@@ -26,16 +27,12 @@ int main() {
 
 	std::string source = ss.str();
 
-	Tokenizer t(source);
+	Tokenizer tok(source);
 
 	llvm::llvm_shutdown_obj lso;
 
 	try {
-		auto tokens = t.collect();
-		Parser p(tokens);
-
-		auto hir = p.collect();
-
+		Parser hir(tok);
 		HirLowerer mir(hir);
 		MirLowerer llir(mir);
 
@@ -44,6 +41,9 @@ int main() {
 		llir.compileObjectFile(llvm::OptimizationLevel::O3,
 													 llvm::ThinOrFullLTOPhase::None);
 		llir.link();
+	} catch (Error &error) {
+		fmt::print("{}\n", error.format(source));
+		return 1;
 	} catch (std::runtime_error &e) {
 		fmt::print("error: {}\n", e.what());
 		return 1;

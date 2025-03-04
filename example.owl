@@ -1,12 +1,14 @@
-extern fn printf(fmt: *i8, ...): i32;
+extern fn printf(fmt: *char, ...): i32;
 
 fn main(): i32 {
-	let x = &1;
+	let a: i32 = &1;
 
-	if (*x == 1) {
-		x = &5;
+	if (*a == 2) {
+		a = &3;
 	}
-	
-	return *x;
+
+	printf("a: %d\n", *a);
+
+	return 1;
 }
 

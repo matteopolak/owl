@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "token.h"
+#include "tokenizer.h"
 
 class BasicParser;
 
@@ -35,7 +36,9 @@ get_rest(First, Rest... rest) {
 
 class BasicParser {
 public:
-	BasicParser(std::vector<Token> tokens) : tokens(tokens) {}
+	BasicParser(Tokenizer tokenizer) : tokenizer(tokenizer) {}
+
+	std::string_view source() { return tokenizer.source(); }
 
 	ParserTransaction tx() { return ParserTransaction(*this); }
 
@@ -164,6 +167,7 @@ public:
 	bool isEmpty() { return index >= tokens.size(); }
 
 	std::size_t index = 0;
+	Tokenizer tokenizer;
 	std::vector<Token> tokens;
 
 private:
