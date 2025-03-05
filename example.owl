@@ -1,14 +1,24 @@
 extern fn printf(fmt: *char, ...): i32;
 
+struct Hello {
+  field: i32,
+	other: bool
+}
+
 fn main(): i32 {
-  let a = 2;
+  let a = Hello {
+    field: 1,
+    other: true
+  };
 
-	if (a == 3) {
-		a = 6;
-	} else {
-		a = 10;
-	}
+  a.field = 3;
 
-	return a;
+  if (a.other) {
+    a.field = a.field + 10;
+  }
+
+  printf("a: %d\n", a.field);
+
+  return 5;
 }
 

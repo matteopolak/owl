@@ -1,10 +1,11 @@
 #pragma once
 
-#include <fmt/core.h>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
+
+#include <fmt/core.h>
 
 #include "hir.h"
 

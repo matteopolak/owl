@@ -1,11 +1,12 @@
 #pragma once
 
-#include <fmt/core.h>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
+
+#include <fmt/core.h>
 
 #include "basic_tokenizer.h"
 #include "span.h"

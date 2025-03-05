@@ -1,9 +1,10 @@
 #pragma once
 
-#include <fmt/core.h>
 #include <optional>
 #include <string>
 #include <variant>
+
+#include <fmt/core.h>
 
 #include "basic_tokenizer.h"
 #include "span.h"
@@ -269,10 +270,6 @@ public:
 			op = Op::DIV;
 		} else if (t.tryConsume("%")) {
 			op = Op::MOD;
-		} else if (t.tryConsume("&")) {
-			op = Op::BIT_AND;
-		} else if (t.tryConsume("|")) {
-			op = Op::BIT_OR;
 		} else if (t.tryConsume("^")) {
 			op = Op::BIT_XOR;
 		} else if (t.tryConsume("~")) {
@@ -289,6 +286,10 @@ public:
 			op = Op::NOT;
 		} else if (t.tryConsume("==")) {
 			op = Op::EQEQ;
+		} else if (t.tryConsume("&")) {
+			op = Op::BIT_AND;
+		} else if (t.tryConsume("|")) {
+			op = Op::BIT_OR;
 		} else if (t.tryConsume("=")) {
 			op = Op::EQ;
 		} else if (t.tryConsume("!=")) {
@@ -393,6 +394,7 @@ enum class Delim {
 	LANGLE,
 	RANGLE,
 	COLON,
+	PERIOD,
 	// not parsed, is created by the tokenizer
 	COLON_COLON
 };
@@ -445,6 +447,8 @@ public:
 			return Delim::RANGLE;
 		} else if (c == ':') {
 			return Delim::COLON;
+		} else if (c == '.') {
+			return Delim::PERIOD;
 		} else {
 			return std::nullopt;
 		}
@@ -474,6 +478,8 @@ public:
 			return ">";
 		case Delim::COLON:
 			return ":";
+		case Delim::PERIOD:
+			return ".";
 		case Delim::COLON_COLON:
 			return "::";
 		default:

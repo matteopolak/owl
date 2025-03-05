@@ -1,13 +1,12 @@
 #pragma once
 
-#include <llvm-19/llvm/IR/Instructions.h>
 #include <unordered_map>
-#include <unordered_set>
 
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
@@ -62,14 +61,12 @@ public:
 		builder.CreateStore(value, ptr);
 	}
 
-	void reassign(MirIdent ident, llvm::Value *value) {
-		auto it = getAlloca(ident);
-		builder.CreateStore(value, it);
+	void setAlloca(MirIdent ident, llvm::AllocaInst *alloca) {
+		variables[ident] = alloca;
 	}
 
 	void setFn(MirPath path, llvm::Function *fn) { functions[path] = fn; }
 
-private:
 	llvm::AllocaInst *getAlloca(MirIdent ident) {
 		if (auto it = variables.find(ident); it != variables.end()) {
 			return it->second;
@@ -82,6 +79,7 @@ private:
 		throw std::runtime_error("variable not found");
 	}
 
+private:
 	llvm::IRBuilder<> &builder;
 	std::shared_ptr<LlScope> parent;
 
@@ -296,6 +294,14 @@ public:
 		}
 
 		std::error_code ec;
+
+		ec = llvm::sys::fs::create_directory("target");
+
+		if (ec) {
+			llvm::errs() << "Error creating directory: " << ec.message();
+			return;
+		}
+
 		llvm::raw_fd_ostream dest("target/output.o", ec, llvm::sys::fs::OF_None);
 		if (ec) {
 			llvm::errs() << "Error opening file: " << ec.message();
@@ -387,7 +393,7 @@ private:
 			entryScope->set(mir.params[i].ident, arg);
 		}
 
-		scope->setFn(mir.ident, fn);
+		scope->setFn(MirPath{mir.ident}, fn);
 
 		builder.SetInsertPoint(entry);
 
@@ -407,7 +413,7 @@ private:
 			arg->setName(mir.params[i].ident.value());
 		}
 
-		scope->setFn(mir.ident, fn);
+		scope->setFn(MirPath{mir.ident}, fn);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirStruct &mir) {
@@ -708,6 +714,25 @@ private:
 		throw std::runtime_error("not implemented");
 	}
 
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const MirStructInstance &mir) {
+		llvm::Type *ty = ctx.get(mir.type);
+		llvm::AllocaInst *str = builder.CreateAlloca(ty);
+
+		for (std::size_t i = 0; i < mir.fields.size(); i++) {
+			llvm::Value *value = lower(scope, mir.fields[i].expr);
+			llvm::Value *ptr = builder.CreateStructGEP(ty, str, i);
+			builder.CreateStore(value, ptr);
+		}
+
+		return str;
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirStructInstance> &mir) {
+		return lower(scope, *mir);
+	}
+
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirBinOp &mir) {
 		llvm::Value *lhs = lower(scope, mir.lhs);
 		llvm::Value *rhs = lower(scope, mir.rhs);
@@ -738,6 +763,40 @@ private:
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
 										 const std::shared_ptr<MirUnOp> &mir) {
 		return lower(scope, *mir);
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														const MirStructPath &mir) {
+		llvm::Value *alloc = scope->getAlloca(mir.ident);
+		auto ty = mir.structType;
+
+		for (std::size_t idx : mir.indices) {
+			auto structTy = std::get<MirStruct>(ctx.ty.get(ty).kind);
+			auto llvmTy = ctx.get(ty);
+
+			alloc = builder.CreateStructGEP(llvmTy, alloc, idx);
+			ty = structTy.fields[idx].type;
+		}
+
+		return alloc;
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const MirStructPath &mir) {
+		llvm::Value *alloc = scope->getAlloca(mir.ident);
+		auto ty = mir.structType;
+
+		for (std::size_t idx : mir.indices) {
+			auto structTy = std::get<MirStruct>(ctx.ty.get(ty).kind);
+			auto llvmTy = ctx.get(ty);
+
+			alloc = builder.CreateStructGEP(llvmTy, alloc, idx);
+			ty = structTy.fields[idx].type;
+
+			fmt::print("getting value: {}\n", idx);
+		}
+
+		return builder.CreateLoad(ctx.get(ty), alloc, mir.ident.value());
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirExpr &mir) {
@@ -866,13 +925,20 @@ private:
 	void lower(std::shared_ptr<LlScope> &scope, const MirAssign &mir) {
 		llvm::Value *value = lower(scope, mir.expr);
 
-		scope->set(mir.ident, value);
+		if (std::holds_alternative<std::shared_ptr<MirStructInstance>>(
+						mir.expr.expr)) {
+			scope->setAlloca(mir.ident, static_cast<llvm::AllocaInst *>(value));
+		} else {
+			scope->set(mir.ident, value);
+		}
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirReassign &mir) {
 		llvm::Value *value = lower(scope, mir.expr);
+		llvm::Value *alloc = lowerToAlloc(scope, mir.path);
 
-		scope->reassign(mir.ident, value);
+		// TODO: fix for structs?
+		builder.CreateStore(value, alloc);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirReturn &mir) {
