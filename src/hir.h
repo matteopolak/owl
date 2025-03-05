@@ -566,33 +566,65 @@ public:
 	}
 };
 
+class HirElse : public BaseHir {
+public:
+	HirElse(Span span, TokenKeyword else_,
+					std::optional<std::pair<TokenKeyword, HirExpr>> cond, HirBlock block)
+			: BaseHir(span), else_(else_), cond(std::move(cond)),
+				block(std::move(block)) {}
+
+	TokenKeyword else_;
+	std::optional<std::pair<TokenKeyword, HirExpr>> cond;
+	HirBlock block;
+
+	static HirElse parse(BasicParser &t) {
+		auto else_ = t.consume<TokenKeyword>(Keyword::ELSE);
+
+		std::optional<std::pair<TokenKeyword, HirExpr>> cond;
+
+		if (t.tryConsume<TokenKeyword>(Keyword::IF)) {
+			auto if_ = t.consume<TokenKeyword>(Keyword::IF);
+			t.consume<TokenDelim>(Delim::LPAREN);
+			auto expr = HirExpr::parse(t);
+			t.consume<TokenDelim>(Delim::RPAREN);
+
+			cond = std::make_pair(if_, expr);
+		}
+
+		auto block = HirBlock::parse(t);
+
+		return HirElse{else_.span().merge(block.span()), else_, std::move(cond),
+									 block};
+	}
+};
+
 class HirIf : public BaseHir {
 public:
 	HirIf(Span span, TokenKeyword if_, HirExpr cond, HirBlock block,
-				std::optional<std::pair<TokenKeyword, HirBlock>> elseBlock)
+				std::vector<HirElse> else_)
 			: BaseHir(span), if_(if_), cond(std::move(cond)), block(std::move(block)),
-				elseBlock(std::move(elseBlock)) {}
+				else_(std::move(else_)) {}
 
 	TokenKeyword if_;
 	HirExpr cond;
 	HirBlock block;
-	std::optional<std::pair<TokenKeyword, HirBlock>> elseBlock;
+	std::vector<HirElse> else_;
 
 	static HirIf parse(BasicParser &t) {
 		auto if_ = t.consume<TokenKeyword>(Keyword::IF);
+		t.consume<TokenDelim>(Delim::LPAREN);
 		auto cond = HirExpr::parse(t);
+		t.consume<TokenDelim>(Delim::RPAREN);
 		auto block = HirBlock::parse(t);
 
-		std::optional<std::pair<TokenKeyword, HirBlock>> elseBlock;
+		std::vector<HirElse> else_;
 
-		if (auto else_ = t.tryConsume<TokenKeyword>(Keyword::ELSE)) {
-			auto block = HirBlock::parse(t);
-
-			elseBlock = std::make_pair(*else_, block);
+		while (t.peek<TokenKeyword>(Keyword::ELSE)) {
+			else_.push_back(HirElse::parse(t));
 		}
 
 		return HirIf{if_.span().merge(block.span()), if_, std::move(cond), block,
-								 elseBlock};
+								 else_};
 	}
 
 	static std::optional<HirIf> tryParse(BasicParser &t) {

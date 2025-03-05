@@ -3,6 +3,7 @@
 /out/
 /bin/
 /lib/
+/target/
 
 # CMake-generated files
 /CMakeCache.txt

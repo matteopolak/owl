@@ -1,5 +1,6 @@
 #pragma once
 
+#include <llvm-19/llvm/IR/Instructions.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -19,52 +20,26 @@
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/Reassociate.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 
 #include "mir.h"
 #include "token.h"
 
 class LlScope {
 public:
-	LlScope(std::shared_ptr<LlScope> parent, llvm::Function *fn = nullptr,
-					llvm::BasicBlock *block = nullptr)
-			: fn(fn), block(block), parent(parent) {}
+	LlScope(llvm::IRBuilder<> &builder, std::shared_ptr<LlScope> parent = nullptr,
+					llvm::Function *fn = nullptr)
+			: fn(fn), builder(builder), parent(parent) {}
 
-	llvm::Function *fn = nullptr;
-	llvm::BasicBlock *block = nullptr;
-	llvm::BasicBlock *loopCondBlock = nullptr;
-	llvm::BasicBlock *loopBodyBlock = nullptr;
-	llvm::BasicBlock *postLoopBlock = nullptr;
-
-	llvm::BasicBlock *ifCondBlock = nullptr;
-	llvm::BasicBlock *ifBodyBlock = nullptr;
-	llvm::BasicBlock *postIfBlock = nullptr;
+	llvm::Function *fn;
 
 	llvm::Value *get(MirIdent ident) {
-		if (auto it = variables.find(ident); it != variables.end()) {
-			return it->second;
-		}
+		auto alloc = getAlloca(ident);
+		auto ty = alloc->getAllocatedType();
 
-		if (parent) {
-			return parent->get(ident);
-		}
-
-		throw std::runtime_error("variable not found");
-	}
-
-	LlScope &getScope(MirIdent ident) {
-		// if it's defined in the local scope then we want to use it
-		if (local.contains(ident)) {
-			if (auto it = variables.find(ident); it != variables.end()) {
-				return *this;
-			}
-		}
-
-		if (parent) {
-			return parent->getScope(ident);
-		}
-
-		throw std::runtime_error(
-				fmt::format("block variable not found: {}", ident.value()));
+		return builder.CreateLoad(ty, alloc);
 	}
 
 	llvm::Function *getFn(MirPath path) {
@@ -80,52 +55,37 @@ public:
 	}
 
 	void set(MirIdent ident, llvm::Value *value) {
-		variables[ident] = value;
-		local.insert(ident);
+		llvm::IRBuilder<> b(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+		auto ptr = b.CreateAlloca(value->getType(), nullptr, ident.value());
+
+		variables[ident] = ptr;
+		builder.CreateStore(value, ptr);
 	}
 
 	void reassign(MirIdent ident, llvm::Value *value) {
-		get(ident); // ensure it exists
-
-		// potentially wasn't declared here
-		variables[ident] = value;
-
-		// in whichever block it's used in next, we need to replace it with a
-		// phinode
-		LlScope &scope = getScope(ident);
-
-		// if the scope already contains a PHINode, then we just need to replace the
-		// edge with the new value
-		auto node = scope.variables[ident];
-
-		if (auto phi = llvm::dyn_cast<llvm::PHINode>(node)) {
-			phi->removeIncomingValue(block);
-			phi->addIncoming(value, block);
-
-			scope.variables[ident] = phi;
-			// if it's local, then we don't want to do anything (we already set the
-			// variable to a value)
-		} else if (!local.contains(ident)) {
-			if (postIfBlock) {
-				llvm::PHINode *phi2 = llvm::PHINode::Create(value->getType(), 2,
-																										ident.value(), postIfBlock);
-
-				// node->replaceAllUsesWith(phi2);
-				phi2->addIncoming(node, scope.block);
-				phi2->addIncoming(value, block);
-
-				scope.variables[ident] = phi2;
-			}
-		}
+		auto it = getAlloca(ident);
+		builder.CreateStore(value, it);
 	}
 
 	void setFn(MirPath path, llvm::Function *fn) { functions[path] = fn; }
 
 private:
+	llvm::AllocaInst *getAlloca(MirIdent ident) {
+		if (auto it = variables.find(ident); it != variables.end()) {
+			return it->second;
+		}
+
+		if (parent) {
+			return parent->getAlloca(ident);
+		}
+
+		throw std::runtime_error("variable not found");
+	}
+
+	llvm::IRBuilder<> &builder;
 	std::shared_ptr<LlScope> parent;
 
-	std::unordered_set<MirIdent> local;
-	std::unordered_map<MirIdent, llvm::Value *> variables;
+	std::unordered_map<MirIdent, llvm::AllocaInst *> variables;
 	std::unordered_map<MirPath, llvm::Function *> functions;
 };
 
@@ -141,8 +101,7 @@ public:
 			return static_cast<T *>(it->second);
 		}
 
-		auto type =
-				std::visit([&](auto &&arg) { return get(arg); }, ty.get(handle).kind);
+		auto type = get(ty.get(handle));
 
 		types[handle] = type;
 
@@ -156,6 +115,10 @@ private:
 	llvm::DataLayout dataLayout;
 
 	std::unordered_map<TypeHandle, llvm::Type *> types;
+
+	llvm::Type *get(const MirType &type) {
+		return std::visit([&](auto &&arg) { return get(arg); }, type.kind);
+	}
 
 	llvm::Type *get(const MirTypeBuiltin &builtin) {
 		switch (builtin) {
@@ -245,7 +208,7 @@ public:
 	MirLowerer(HirLowerer mir_)
 			: context(), module("example", context), mir(std::move(mir_)),
 				ctx(mir.ctx, context, module),
-				scope(std::make_shared<LlScope>(nullptr)) {}
+				scope(std::make_shared<LlScope>(builder)) {}
 
 	llvm::LLVMContext context;
 	llvm::Module module;
@@ -264,8 +227,13 @@ public:
 		}
 	}
 
+	void compileObjectFile() {
+		compileObjectFile(llvm::OptimizationLevel::O3,
+											llvm::ThinOrFullLTOPhase::None, false);
+	}
+
 	void compileObjectFile(llvm::OptimizationLevel level,
-												 llvm::ThinOrFullLTOPhase phase) {
+												 llvm::ThinOrFullLTOPhase phase, bool optimize = true) {
 		if (llvm::verifyModule(module, &llvm::errs())) {
 			llvm::errs() << "Error: Module verification failed!\n";
 			return;
@@ -294,27 +262,38 @@ public:
 
 		module.setDataLayout(targetMachine->createDataLayout());
 
-		llvm::PassBuilder passBuilder;
+		if (optimize) {
+			llvm::PassBuilder passBuilder;
 
-		llvm::LoopAnalysisManager loopAnalysisManager;
-		llvm::FunctionAnalysisManager functionAnalysisManager;
-		llvm::CGSCCAnalysisManager cgsccAnalysisManager;
-		llvm::ModuleAnalysisManager moduleAnalysisManager;
+			llvm::LoopAnalysisManager loopAnalysisManager;
+			llvm::FunctionAnalysisManager functionAnalysisManager;
+			llvm::CGSCCAnalysisManager cgsccAnalysisManager;
+			llvm::ModuleAnalysisManager moduleAnalysisManager;
 
-		passBuilder.registerModuleAnalyses(moduleAnalysisManager);
-		passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
-		passBuilder.registerFunctionAnalyses(functionAnalysisManager);
-		passBuilder.registerLoopAnalyses(loopAnalysisManager);
-		passBuilder.crossRegisterProxies(
-				loopAnalysisManager, functionAnalysisManager, cgsccAnalysisManager,
-				moduleAnalysisManager);
+			passBuilder.registerModuleAnalyses(moduleAnalysisManager);
+			passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
+			passBuilder.registerFunctionAnalyses(functionAnalysisManager);
+			passBuilder.registerLoopAnalyses(loopAnalysisManager);
+			passBuilder.crossRegisterProxies(
+					loopAnalysisManager, functionAnalysisManager, cgsccAnalysisManager,
+					moduleAnalysisManager);
 
-		llvm::ModulePassManager modulePassManager;
+			llvm::ModulePassManager modulePassManager;
 
-		modulePassManager.addPass(
-				passBuilder.buildModuleSimplificationPipeline(level, phase));
+			modulePassManager.addPass(
+					passBuilder.buildModuleSimplificationPipeline(level, phase));
 
-		modulePassManager.run(module, moduleAnalysisManager);
+			llvm::FunctionPassManager functionPassManager;
+
+			functionPassManager.addPass(llvm::PromotePass());
+			functionPassManager.addPass(llvm::InstCombinePass());
+			functionPassManager.addPass(llvm::ReassociatePass());
+
+			modulePassManager.addPass(llvm::createModuleToFunctionPassAdaptor(
+					std::move(functionPassManager)));
+
+			modulePassManager.run(module, moduleAnalysisManager);
+		}
 
 		std::error_code ec;
 		llvm::raw_fd_ostream dest("target/output.o", ec, llvm::sys::fs::OF_None);
@@ -400,7 +379,7 @@ private:
 
 		llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", fn);
 		std::shared_ptr<LlScope> entryScope =
-				std::make_shared<LlScope>(scope, fn, entry);
+				std::make_shared<LlScope>(builder, scope, fn);
 
 		for (std::size_t i = 0; i < mir.params.size(); i++) {
 			llvm::Argument *arg = fn->arg_begin() + i;
@@ -630,6 +609,22 @@ private:
 			return lowerBuiltinBinOp(*it, op, lhs, rhs);
 		}
 
+		if (auto it = std::get_if<MirPointer>(&kind); it) {
+			switch (op) {
+			case Op::ADD:
+				return builder.CreateAdd(lhs, rhs);
+			case Op::SUB:
+				return builder.CreateSub(lhs, rhs);
+			case Op::EQEQ:
+				return builder.CreateICmpEQ(lhs, rhs);
+			case Op::NEQ:
+				return builder.CreateICmpNE(lhs, rhs);
+			default:
+				throw std::runtime_error(
+						fmt::format("unimplemented binop for pointer: {}", op));
+			}
+		}
+
 		throw std::runtime_error("not implemented");
 	}
 
@@ -754,48 +749,56 @@ private:
 			throw std::runtime_error("no block");
 		}
 
-		llvm::BasicBlock *loopCondBlock =
+		std::shared_ptr<LlScope> loopScope =
+				std::make_shared<LlScope>(builder, scope, scope->fn);
+
+		llvm::BasicBlock *setupBlock =
+				llvm::BasicBlock::Create(context, "loop_setup", scope->fn);
+		llvm::BasicBlock *condBlock =
 				llvm::BasicBlock::Create(context, "loop_cond", scope->fn);
-
-		builder.CreateBr(loopCondBlock);
-		builder.SetInsertPoint(loopCondBlock);
-
-		llvm::BasicBlock *loopBodyBlock =
+		llvm::BasicBlock *bodyBlock =
 				llvm::BasicBlock::Create(context, "loop_body", scope->fn);
+		llvm::BasicBlock *stepBlock =
+				llvm::BasicBlock::Create(context, "loop_step", scope->fn);
+		llvm::BasicBlock *mergeBlock =
+				llvm::BasicBlock::Create(context, "loop_merge", scope->fn);
 
-		llvm::BasicBlock *postLoopBlock =
-				llvm::BasicBlock::Create(context, "post_loop", scope->fn);
+		builder.CreateBr(setupBlock);
+		builder.SetInsertPoint(setupBlock);
 
-		// new scope
-		std::shared_ptr<LlScope> loopCondScope =
-				std::make_shared<LlScope>(scope, scope->fn, loopCondBlock);
+		if (auto &s = mir.setup) {
+			lower(loopScope, *s);
+		}
 
-		loopCondScope->loopCondBlock = loopCondBlock;
-		loopCondScope->loopBodyBlock = loopBodyBlock;
-		loopCondScope->postLoopBlock = postLoopBlock;
+		builder.CreateBr(condBlock);
+		builder.SetInsertPoint(condBlock);
 
 		if (std::optional<MirExpr> c = mir.cond) {
-			llvm::Value *cond = lower(loopCondScope, *c);
-			builder.CreateCondBr(cond, loopBodyBlock, postLoopBlock);
+			llvm::Value *cond = lower(loopScope, *c);
+			builder.CreateCondBr(cond, bodyBlock, mergeBlock);
 		} else {
-			builder.CreateBr(loopBodyBlock);
+			builder.CreateBr(mergeBlock);
 		}
 
-		std::shared_ptr<LlScope> loopScope =
-				std::make_shared<LlScope>(loopCondScope, scope->fn, loopBodyBlock);
+		builder.SetInsertPoint(stepBlock);
 
-		loopScope->loopCondBlock = loopCondBlock;
-		loopScope->loopBodyBlock = loopBodyBlock;
-		loopScope->postLoopBlock = postLoopBlock;
-
-		builder.SetInsertPoint(loopBodyBlock);
-
-		for (const MirBlockItem &node : mir.block.items) {
-			std::visit([&](auto &&arg) { lower(loopScope, arg); }, node);
+		if (auto &u = mir.step) {
+			lower(loopScope, *u);
 		}
 
-		builder.CreateBr(loopCondBlock);
-		builder.SetInsertPoint(postLoopBlock);
+		builder.CreateBr(condBlock);
+
+		std::shared_ptr<LlScope> loopBodyScope =
+				std::make_shared<LlScope>(builder, loopScope, scope->fn);
+
+		builder.SetInsertPoint(bodyBlock);
+
+		for (auto &node : mir.block.items) {
+			lower(loopScope, node);
+		}
+
+		builder.CreateBr(stepBlock);
+		builder.SetInsertPoint(mergeBlock);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirIf &mir) {
@@ -803,35 +806,61 @@ private:
 			throw std::runtime_error("no block");
 		}
 
-		llvm::BasicBlock *ifBodyBlock =
+		llvm::BasicBlock *bodyBlock =
 				llvm::BasicBlock::Create(context, "if_body", scope->fn);
 
-		llvm::BasicBlock *postIfBlock =
-				llvm::BasicBlock::Create(context, "post_if", scope->fn);
+		llvm::BasicBlock *mergeBlock =
+				llvm::BasicBlock::Create(context, "if_merge", scope->fn);
 
-		// new scope
+		llvm::BasicBlock *elseBlock =
+				llvm::BasicBlock::Create(context, "if_else", scope->fn);
+
 		std::shared_ptr<LlScope> ifScope =
-				std::make_shared<LlScope>(scope, scope->fn, ifBodyBlock);
-
-		ifScope->ifBodyBlock = ifBodyBlock;
-		ifScope->postIfBlock = postIfBlock;
+				std::make_shared<LlScope>(builder, scope, scope->fn);
 
 		llvm::Value *cond = lower(ifScope, mir.cond);
-		builder.CreateCondBr(cond, ifBodyBlock, postIfBlock);
 
-		builder.SetInsertPoint(ifBodyBlock);
+		builder.CreateCondBr(cond, bodyBlock, elseBlock);
+		builder.SetInsertPoint(bodyBlock);
 
-		for (const MirBlockItem &node : mir.block.items) {
-			std::visit([&](auto &&arg) { lower(ifScope, arg); }, node);
+		for (auto &node : mir.block.items) {
+			lower(ifScope, node);
 		}
 
-		builder.CreateBr(postIfBlock);
-		builder.SetInsertPoint(postIfBlock);
+		builder.CreateBr(mergeBlock);
+		builder.SetInsertPoint(elseBlock);
 
-		// check for else
-		if (auto &else_ = mir.else_) {
-			lower(scope, **else_);
+		for (auto &node : mir.else_) {
+			lower(ifScope, mergeBlock, node);
 		}
+
+		if (mir.else_.empty()) {
+			builder.CreateBr(mergeBlock);
+		}
+
+		builder.SetInsertPoint(mergeBlock);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, llvm::BasicBlock *mergeBlock,
+						 const MirElse &mir) {
+		llvm::BasicBlock *bodyBlock =
+				llvm::BasicBlock::Create(context, "else_body", scope->fn);
+
+		if (auto c = mir.cond) {
+			llvm::Value *cond = lower(scope, *c);
+
+			builder.CreateCondBr(cond, bodyBlock, mergeBlock);
+		} else {
+			builder.CreateBr(bodyBlock);
+		}
+
+		builder.SetInsertPoint(bodyBlock);
+
+		for (auto &node : mir.block.items) {
+			lower(scope, node);
+		}
+
+		builder.CreateBr(mergeBlock);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirAssign &mir) {
@@ -863,5 +892,13 @@ private:
 	void lower(std::shared_ptr<LlScope> &scope,
 						 const std::shared_ptr<MirIf> &mir) {
 		lower(scope, *mir);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirStmt &mir) {
+		std::visit([&](auto &&arg) { lower(scope, arg); }, mir);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirBlockItem &mir) {
+		std::visit([&](auto &&arg) { lower(scope, arg); }, mir);
 	}
 };

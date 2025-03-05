@@ -1,8 +1,14 @@
 extern fn printf(fmt: *char, ...): i32;
 
 fn main(): i32 {
-  let a = 1;
+  let a = 2;
 
-  a = true;
+	if (a == 3) {
+		a = 6;
+	} else {
+		a = 10;
+	}
+
+	return a;
 }
 

@@ -905,25 +905,43 @@ MirExpr MirExpr::from_hir(TypeCtx &ctx, HirExpr hir) {
 										hir.expr);
 }
 
+class MirElse {
+public:
+	MirElse(std::optional<MirExpr> cond, MirBlock block)
+			: cond(cond), block(block) {}
+
+	std::optional<MirExpr> cond;
+	MirBlock block;
+};
+
 class MirIf {
 public:
-	MirIf(MirExpr cond, MirBlock block) : cond(cond), block(block) {}
+	MirIf(MirExpr cond, MirBlock block, std::vector<MirElse> else_)
+			: cond(cond), block(block), else_(else_) {}
 
 	MirExpr cond;
 	MirBlock block;
-	std::optional<std::unique_ptr<MirIf>> else_;
+	std::vector<MirElse> else_;
 
 	static MirIf from_hir(TypeCtx &ctx, std::shared_ptr<HirIf> hir) {
 		auto cond = MirExpr::from_hir(ctx, hir->cond);
 		auto block = MirBlock::from_hir(ctx, hir->block);
 
-		auto mir = MirIf{cond, block};
+		std::vector<MirElse> else_;
 
-		if (auto block = hir->elseBlock) {
-			throw std::runtime_error("else block not implemented");
+		for (auto &elseIf : hir->else_) {
+			std::optional<MirExpr> cond = std::nullopt;
+
+			if (elseIf.cond) {
+				cond = MirExpr::from_hir(ctx, elseIf.cond->second);
+			}
+
+			auto block = MirBlock::from_hir(ctx, elseIf.block);
+
+			else_.push_back(MirElse{cond, block});
 		}
 
-		return mir;
+		return MirIf{cond, block, else_};
 	}
 };
 

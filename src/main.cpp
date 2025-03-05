@@ -37,9 +37,8 @@ int main() {
 		MirLowerer llir(mir);
 
 		llir.lower();
+		llir.compileObjectFile();
 		llir.module.print(llvm::errs(), nullptr);
-		llir.compileObjectFile(llvm::OptimizationLevel::O3,
-													 llvm::ThinOrFullLTOPhase::None);
 		llir.link();
 	} catch (Error &error) {
 		fmt::print("{}\n", error.format(source));
