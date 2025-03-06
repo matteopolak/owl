@@ -428,7 +428,7 @@ private:
 		if (auto it = std::get_if<int>(&mir.value)) {
 			return builder.getInt32(*it);
 		} else if (auto it = std::get_if<double>(&mir.value)) {
-			auto ty = ctx.ty.get(MirPath{"f64"});
+			auto ty = ctx.ty.get(MirPath{"f64"}, 0);
 			llvm::Type *doubleTy = ctx.get(ty);
 
 			return llvm::ConstantFP::get(doubleTy, *it);
@@ -688,9 +688,8 @@ private:
 			auto ptrType = std::get<MirPointer>(type);
 			ptrType.refCount -= 1;
 			auto lit = ctx.ty.getTypeLit(ptrType.type);
-			auto path = std::get<MirPath>(lit.item);
-			path.refCount = ptrType.refCount;
-			auto ty = ctx.ty.get(path);
+			lit.refCount = ptrType.refCount;
+			auto ty = ctx.ty.get(lit);
 			auto inner = ctx.get(ty);
 
 			return builder.CreateLoad(inner, value);
@@ -751,25 +750,6 @@ private:
 		return lower(scope, *mir);
 	}
 
-	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirArrayPath &mir) {
-		llvm::Value *alloc = scope->getAlloca(mir.ident);
-		auto ty = mir.arrayType;
-
-		for (auto expr : mir.parts) {
-			llvm::Value *index = lower(scope, expr);
-			alloc =
-					builder.CreateGEP(ctx.get(ty), alloc, {builder.getInt32(0), index});
-			ty = std::get<MirArray>(ctx.ty.get(ty).kind).type;
-		}
-
-		return builder.CreateLoad(ctx.get(ty), alloc);
-	}
-
-	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
-										 const std::shared_ptr<MirArrayPath> &mir) {
-		return lower(scope, *mir);
-	}
-
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirBinOp &mir) {
 		llvm::Value *lhs = lower(scope, mir.lhs);
 		llvm::Value *rhs = lower(scope, mir.rhs);
@@ -803,37 +783,68 @@ private:
 	}
 
 	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
-														const MirStructPath &mir) {
-		llvm::Value *alloc = scope->getAlloca(mir.ident);
-		auto ty = mir.structType;
+														const MirAssignableRootItem &mir) {
+		/* using MirAssignableRootItem =
+		std::variant<MirIdent, std::shared_ptr<MirAssignable>>; */
 
-		for (std::size_t idx : mir.indices) {
-			auto structTy = std::get<MirStruct>(ctx.ty.get(ty).kind);
-			auto llvmTy = ctx.get(ty);
-
-			alloc = builder.CreateStructGEP(llvmTy, alloc, idx);
-			ty = structTy.fields[idx].type;
+		if (auto it = std::get_if<MirIdent>(&mir); it) {
+			return scope->getAlloca(*it);
 		}
 
-		return alloc;
+		if (auto it = std::get_if<std::shared_ptr<MirAssignable>>(&mir); it) {
+			return lowerToAlloc(scope, **it);
+		}
+
+		throw std::runtime_error("not implemented");
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														std::shared_ptr<MirPointerDeref> mir) {
+		llvm::Value *value = lowerToAlloc(scope, mir->expr);
+		llvm::Type *ty = ctx.get(mir->type);
+
+		return builder.CreateLoad(ty, value);
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														const MirFieldAccess &mir, llvm::Value *alloc) {
+		llvm::Type *type = ctx.get(mir.structType);
+		llvm::Value *ptr = builder.CreateStructGEP(type, alloc, mir.index);
+
+		return ptr;
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														const MirArrayIndex &mir, llvm::Value *alloc) {
+		llvm::Value *index = lower(scope, *mir.expr);
+		llvm::Type *type = ctx.get(mir.arrayType);
+
+		return builder.CreateGEP(type, alloc, {builder.getInt32(0), index});
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														const MirAssignableItem &mir, llvm::Value *alloc) {
+		return std::visit(
+				[&](auto &&arg) { return lowerToAlloc(scope, arg, alloc); }, mir);
+	}
+
+	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
+														const MirAssignable &mir) {
+		llvm::Value *root = lowerToAlloc(scope, mir.root);
+
+		for (auto &item : mir.parts) {
+			root = lowerToAlloc(scope, item, root);
+		}
+
+		return root;
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
-										 const MirStructPath &mir) {
-		llvm::Value *alloc = scope->getAlloca(mir.ident);
-		auto ty = mir.structType;
+										 const MirAssignable &mir) {
+		llvm::Value *alloc = lowerToAlloc(scope, mir);
+		llvm::Type *type = ctx.get(mir.type);
 
-		for (std::size_t idx : mir.indices) {
-			auto structTy = std::get<MirStruct>(ctx.ty.get(ty).kind);
-			auto llvmTy = ctx.get(ty);
-
-			alloc = builder.CreateStructGEP(llvmTy, alloc, idx);
-			ty = structTy.fields[idx].type;
-
-			fmt::print("getting value: {}\n", idx);
-		}
-
-		return builder.CreateLoad(ctx.get(ty), alloc, mir.ident.value());
+		return builder.CreateLoad(type, alloc);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirExpr &mir) {
