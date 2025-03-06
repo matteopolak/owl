@@ -13,6 +13,10 @@ fn main(): i32 {
 
   a.field = 3;
 
+  let b = 1;
+
+  a.xyz = 5;
+
   if (a.other) {
     a.field = a.field + 10;
   }

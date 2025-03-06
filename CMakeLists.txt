@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(stuff)
+project(owl)
 
 set(CMAKE_CXX_STANDARD 20)
 
 find_package(fmt CONFIG REQUIRED)
+find_path(RANG_INCLUDE_DIRS "rang.hpp")
 find_package(LLVM CONFIG REQUIRED)
 
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
@@ -17,13 +18,13 @@ set(SOURCES
 )
 
 include_directories(src)
-add_compile_options(-fsanitize=address)
-add_link_options(-fsanitize=address)
+add_compile_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
+add_link_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
 
-# all compiler warnings but only for my code
 add_compile_options(-Wall -Wextra -Wpedantic)
 
-add_executable(stuff ${SOURCES})
+add_executable(owl ${SOURCES})
 
-target_link_libraries(stuff PRIVATE fmt::fmt)
-target_link_libraries(stuff PRIVATE ${llvm_libs})
+target_include_directories(owl PRIVATE ${RANG_INCLUDE_DIRS})
+target_link_libraries(owl PRIVATE fmt::fmt)
+target_link_libraries(owl PRIVATE ${llvm_libs})

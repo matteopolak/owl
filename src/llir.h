@@ -34,12 +34,12 @@ public:
 
 	llvm::Function *fn;
 
-	llvm::Value *get(MirIdent ident) {
+	/*llvm::Value *get(MirIdent ident) {
 		auto alloc = getAlloca(ident);
 		auto ty = alloc->getAllocatedType();
 
 		return builder.CreateLoad(ty, alloc);
-	}
+	}*/
 
 	llvm::Function *getFn(MirPath path) {
 		if (auto it = functions.find(path); it != functions.end()) {
@@ -438,7 +438,9 @@ private:
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirIdent &mir) {
-		return scope->get(mir);
+		llvm::AllocaInst *alloc = scope->getAlloca(mir);
+
+		return builder.CreateLoad(alloc->getAllocatedType(), alloc);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirFnCall &mir) {
@@ -937,7 +939,6 @@ private:
 		llvm::Value *value = lower(scope, mir.expr);
 		llvm::Value *alloc = lowerToAlloc(scope, mir.path);
 
-		// TODO: fix for structs?
 		builder.CreateStore(value, alloc);
 	}
 

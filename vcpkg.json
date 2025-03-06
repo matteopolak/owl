@@ -1,3 +1,6 @@
 {
-	"dependencies": ["fmt"]
+  "dependencies": [
+    "fmt",
+    "rang"
+  ]
 }

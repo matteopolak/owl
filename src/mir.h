@@ -423,7 +423,8 @@ MirStructPath MirStructPath::from_hir(TypeCtx &ctx, HirStructPath hir) {
 			throw Error(
 					fmt::format("cannot access field `{}` of non-struct type `{}`",
 											part.ident, ctx.get(type).str(ctx)),
-					{{hir.parts[i].span(), "expected struct type"}});
+					{{hir.parts[i].span(), fmt::format("expected struct type, found `{}`",
+																						 ctx.get(type).str(ctx))}});
 		}
 
 		auto field = std::find_if(struct_->fields.begin(), struct_->fields.end(),
@@ -571,8 +572,8 @@ public:
 			if (!ptr) {
 				throw Error(fmt::format("cannot dereference non-pointer type `{}`",
 																inner.str(ctx)),
-										{{expr.span(),
-											fmt::format("expected *_, found {}", inner.str(ctx))}});
+										{{expr.span(), fmt::format("expected `*_`, found `{}`",
+																							 inner.str(ctx))}});
 			}
 
 			auto path = ctx.getPath(expr.type);
@@ -643,7 +644,8 @@ public:
 									{{hir.path.span(), "expected struct type"}});
 		}
 
-		for (auto &field : hir.fields) {
+		for (std::size_t i = 0; i < hir.fields.size(); i++) {
+			auto field = hir.fields[i];
 			auto f = MirStructFieldAssign::from_hir(ctx, field);
 
 			auto found =
@@ -664,9 +666,24 @@ public:
 				auto rhs = ctx.get(f.expr.type);
 
 				throw Error(
-						fmt::format("type mismatch for field `{}`. expected {}, found {}",
-												f.ident.ident, lhs.str(ctx), rhs.str(ctx)),
+						fmt::format(
+								"type mismatch for field `{}`. expected `{}`, found `{}`",
+								f.ident.ident, lhs.str(ctx), rhs.str(ctx)),
 						{{f.expr.span(), "incorrect value here"}});
+			}
+
+			auto end = hir.fields.begin() + i;
+			auto duplicate = std::find_if(hir.fields.begin(), end, [&](auto &f) {
+				return f.ident == field.ident;
+			});
+
+			if (duplicate != end) {
+				throw Error(fmt::format("duplicate field `{}` in struct `{}`",
+																field.ident.value(), struct_->ident.ident),
+										{
+												{field.ident.span(), "duplicate field"},
+												{duplicate->ident.span(), "previous field here"},
+										});
 			}
 
 			fields.push_back(f);
@@ -679,10 +696,12 @@ public:
 			});
 
 			if (found == fields.end()) {
-				throw Error(fmt::format("missing field `{}` in struct `{}`",
-																field.ident.ident, struct_->ident.ident),
-										{{hir.path.span(),
-											fmt::format("missing field `{}`", field.ident.ident)}});
+				throw Error(
+						fmt::format("missing field `{}` in instantiation of struct `{}`",
+												field.ident.ident, struct_->ident.ident),
+						{{hir.path.span(),
+							fmt::format("missing field `{}` in this instantiation",
+													field.ident.ident)}});
 			}
 		}
 
@@ -758,11 +777,10 @@ public:
 				auto lhs = ctx.get(type);
 				auto rhs = ctx.get(expr.type);
 
-				throw Error(
-						fmt::format(
-								"type mismatch for assignment of `{}`. expected {}, found {}",
-								path.value(), lhs.str(ctx), rhs.str(ctx)),
-						{{expr.span(), "incorrect value here"}});
+				throw Error(fmt::format("type mismatch for assignment of `{}`. "
+																"expected `{}`, found `{}`",
+																path.value(), lhs.str(ctx), rhs.str(ctx)),
+										{{expr.span(), "incorrect value here"}});
 			}
 		}
 
@@ -1015,8 +1033,8 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 			throw Error(
 					fmt::format("mismatched types for argument in call to function `{}`",
 											fn->params[i].ident.value(), path),
-					{{arg.span(), fmt::format("expected {}, found {}", expected.str(ctx),
-																		given.str(ctx))}});
+					{{arg.span(), fmt::format("expected `{}`, found `{}`",
+																		expected.str(ctx), given.str(ctx))}});
 		}
 
 		args.push_back(arg);
