@@ -1,0 +1,3 @@
+add mir error for incorrect types in math ops
+generics
+arrays

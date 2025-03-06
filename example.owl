@@ -1,28 +1,10 @@
 extern fn printf(fmt: *char, ...): i32;
 
-struct Hello {
-  field: i32,
-	other: bool
-}
-
 fn main(): i32 {
-  let a = Hello {
-    field: 1,
-    other: true
-  };
+  let arr = [5, 6];
+  
+	arr[0] = 8;
 
-  a.field = 3;
-
-  let b = 1;
-
-  a.xyz = 5;
-
-  if (a.other) {
-    a.field = a.field + 10;
-  }
-
-  printf("a: %d\n", a.field);
-
-  return 5;
+	return arr[0];
 }
 

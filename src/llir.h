@@ -30,16 +30,20 @@ class LlScope {
 public:
 	LlScope(llvm::IRBuilder<> &builder, std::shared_ptr<LlScope> parent = nullptr,
 					llvm::Function *fn = nullptr)
-			: fn(fn), builder(builder), parent(parent) {}
+			: fn(fn), builder(builder), parent(parent) {
+		if (parent) {
+			continueBlock = parent->continueBlock;
+			breakBlock = parent->breakBlock;
+
+			if (!fn) {
+				fn = parent->fn;
+			}
+		}
+	}
 
 	llvm::Function *fn;
-
-	/*llvm::Value *get(MirIdent ident) {
-		auto alloc = getAlloca(ident);
-		auto ty = alloc->getAllocatedType();
-
-		return builder.CreateLoad(ty, alloc);
-	}*/
+	llvm::BasicBlock *continueBlock = nullptr;
+	llvm::BasicBlock *breakBlock = nullptr;
 
 	llvm::Function *getFn(MirPath path) {
 		if (auto it = functions.find(path); it != functions.end()) {
@@ -477,12 +481,6 @@ private:
 				return builder.CreateFDiv(lhs, rhs);
 			case Op::MOD:
 				return builder.CreateFRem(lhs, rhs);
-			case Op::POW: {
-				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
-						&module, llvm::Intrinsic::pow, {lhs->getType()});
-
-				return builder.CreateCall(pow, {lhs, rhs});
-			}
 			case Op::EQEQ:
 				return builder.CreateFCmpOEQ(lhs, rhs);
 			case Op::NEQ:
@@ -510,12 +508,6 @@ private:
 				return builder.CreateSDiv(lhs, rhs);
 			case Op::MOD:
 				return builder.CreateSRem(lhs, rhs);
-			case Op::POW: {
-				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
-						&module, llvm::Intrinsic::pow, {lhs->getType()});
-
-				return builder.CreateCall(pow, {lhs, rhs});
-			}
 			case Op::EQEQ:
 				return builder.CreateICmpEQ(lhs, rhs);
 			case Op::NEQ:
@@ -557,12 +549,6 @@ private:
 				return builder.CreateUDiv(lhs, rhs);
 			case Op::MOD:
 				return builder.CreateURem(lhs, rhs);
-			case Op::POW: {
-				llvm::Function *pow = llvm::Intrinsic::getDeclaration(
-						&module, llvm::Intrinsic::pow, {lhs->getType()});
-
-				return builder.CreateCall(pow, {lhs, rhs});
-			}
 			case Op::EQEQ:
 				return builder.CreateICmpEQ(lhs, rhs);
 			case Op::NEQ:
@@ -701,7 +687,8 @@ private:
 		} else if (op == Op::MUL /* deref */) {
 			auto ptrType = std::get<MirPointer>(type);
 			ptrType.refCount -= 1;
-			auto path = ctx.ty.getPath(ptrType.type);
+			auto lit = ctx.ty.getTypeLit(ptrType.type);
+			auto path = std::get<MirPath>(lit.item);
 			path.refCount = ptrType.refCount;
 			auto ty = ctx.ty.get(path);
 			auto inner = ctx.get(ty);
@@ -727,11 +714,59 @@ private:
 			builder.CreateStore(value, ptr);
 		}
 
-		return str;
+		return builder.CreateLoad(ty, str);
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
 										 const std::shared_ptr<MirStructInstance> &mir) {
+		return lower(scope, *mir);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const MirArrayInstance &mir) {
+		llvm::Type *ty = ctx.get(mir.type);
+		llvm::AllocaInst *arr = builder.CreateAlloca(ty);
+
+		if (mir.values.size() == 1 && mir.size > 1) {
+			llvm::Value *value = lower(scope, mir.values[0]);
+			for (std::size_t i = 0; i < mir.size; i++) {
+				llvm::Value *ptr = builder.CreateGEP(
+						ty, arr, {builder.getInt32(0), builder.getInt32(i)});
+				builder.CreateStore(value, ptr);
+			}
+		} else {
+			for (std::size_t i = 0; i < mir.values.size(); i++) {
+				llvm::Value *value = lower(scope, mir.values[i]);
+				llvm::Value *ptr = builder.CreateGEP(
+						ty, arr, {builder.getInt32(0), builder.getInt32(i)});
+				builder.CreateStore(value, ptr);
+			}
+		}
+
+		return builder.CreateLoad(ty, arr);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirArrayInstance> &mir) {
+		return lower(scope, *mir);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirArrayPath &mir) {
+		llvm::Value *alloc = scope->getAlloca(mir.ident);
+		auto ty = mir.arrayType;
+
+		for (auto expr : mir.parts) {
+			llvm::Value *index = lower(scope, expr);
+			alloc =
+					builder.CreateGEP(ctx.get(ty), alloc, {builder.getInt32(0), index});
+			ty = std::get<MirArray>(ctx.ty.get(ty).kind).type;
+		}
+
+		return builder.CreateLoad(ctx.get(ty), alloc);
+	}
+
+	llvm::Value *lower(std::shared_ptr<LlScope> &scope,
+										 const std::shared_ptr<MirArrayPath> &mir) {
 		return lower(scope, *mir);
 	}
 
@@ -854,11 +889,21 @@ private:
 
 		builder.SetInsertPoint(bodyBlock);
 
+		loopScope->continueBlock = stepBlock;
+		loopScope->breakBlock = mergeBlock;
+
 		for (auto &node : mir.block.items) {
 			lower(loopScope, node);
+
+			if (builder.GetInsertBlock()->getTerminator() != nullptr) {
+				break;
+			}
 		}
 
-		builder.CreateBr(stepBlock);
+		if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+			builder.CreateBr(stepBlock);
+		}
+
 		builder.SetInsertPoint(mergeBlock);
 	}
 
@@ -886,9 +931,16 @@ private:
 
 		for (auto &node : mir.block.items) {
 			lower(ifScope, node);
+
+			if (builder.GetInsertBlock()->getTerminator() != nullptr) {
+				break;
+			}
 		}
 
-		builder.CreateBr(mergeBlock);
+		if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+			builder.CreateBr(mergeBlock);
+		}
+
 		builder.SetInsertPoint(elseBlock);
 
 		for (auto &node : mir.else_) {
@@ -919,20 +971,21 @@ private:
 
 		for (auto &node : mir.block.items) {
 			lower(scope, node);
+
+			if (builder.GetInsertBlock()->getTerminator() != nullptr) {
+				break;
+			}
 		}
 
-		builder.CreateBr(mergeBlock);
+		if (builder.GetInsertBlock()->getTerminator() == nullptr) {
+			builder.CreateBr(mergeBlock);
+		}
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirAssign &mir) {
 		llvm::Value *value = lower(scope, mir.expr);
 
-		if (std::holds_alternative<std::shared_ptr<MirStructInstance>>(
-						mir.expr.expr)) {
-			scope->setAlloca(mir.ident, static_cast<llvm::AllocaInst *>(value));
-		} else {
-			scope->set(mir.ident, value);
-		}
+		scope->set(mir.ident, value);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope, const MirReassign &mir) {
@@ -949,6 +1002,14 @@ private:
 		} else {
 			builder.CreateRetVoid();
 		}
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirContinue &mir) {
+		builder.CreateBr(scope->continueBlock);
+	}
+
+	void lower(std::shared_ptr<LlScope> &scope, const MirBreak &mir) {
+		builder.CreateBr(scope->breakBlock);
 	}
 
 	void lower(std::shared_ptr<LlScope> &scope,

@@ -23,6 +23,8 @@ class HirBinOp;
 class HirUnOp;
 class HirFnCall;
 class HirStructInstance;
+class HirArrayInstance;
+class HirArrayPath;
 
 class HirStructPath : public BaseHir {
 public:
@@ -57,6 +59,8 @@ public:
 
 using HirExprItem =
 		std::variant<TokenLit, TokenIdent, HirStructPath,
+								 std::shared_ptr<HirArrayPath>,
+								 std::shared_ptr<HirArrayInstance>,
 								 std::shared_ptr<HirStructInstance>, std::shared_ptr<HirBinOp>,
 								 std::shared_ptr<HirUnOp>, std::shared_ptr<HirFnCall>>;
 
@@ -88,6 +92,46 @@ private:
 
 		try {
 			auto hir = parse<P>(t);
+			tx.commit();
+			return hir;
+		} catch (std::runtime_error &e) {
+			return std::nullopt;
+		}
+	}
+};
+
+class HirArrayPath : public BaseHir {
+public:
+	HirArrayPath(Span span, TokenIdent ident, std::vector<HirExpr> parts)
+			: BaseHir(span), ident(std::move(ident)), parts(std::move(parts)) {}
+
+	TokenIdent ident;
+	std::vector<HirExpr> parts;
+
+	static HirArrayPath parse(BasicParser &t) {
+		auto ident = t.consume<TokenIdent>();
+
+		std::vector<HirExpr> parts;
+		Span rbracket;
+
+		do {
+			t.consume<TokenDelim>(Delim::LBRACKET);
+			auto expr = HirExpr::parse(t);
+			auto r = t.consume<TokenDelim>(Delim::RBRACKET);
+			rbracket = r.span();
+
+			parts.push_back(std::move(expr));
+		} while (t.tryConsume<TokenDelim>(Delim::LBRACKET));
+
+		return HirArrayPath{ident.span().merge(rbracket), std::move(ident),
+												std::move(parts)};
+	}
+
+	static std::optional<HirArrayPath> tryParse(BasicParser &t) {
+		auto tx = t.tx();
+
+		try {
+			auto hir = parse(t);
 			tx.commit();
 			return hir;
 		} catch (std::runtime_error &e) {
@@ -212,29 +256,73 @@ public:
 	}
 };
 
+class HirArray;
+
+using HirTypeItem = std::variant<HirPath, std::shared_ptr<HirArray>>;
+
+class HirType : public BaseHir {
+public:
+	HirType(Span span, HirTypeItem item) : BaseHir(span), item(std::move(item)) {}
+
+	Span span;
+	HirTypeItem item;
+
+	static HirType parse(BasicParser &t);
+};
+
+class HirArray : public BaseHir {
+public:
+	HirArray(Span span, std::shared_ptr<HirType> type, TokenLit size)
+			: BaseHir(span), type(std::move(type)), size(std::move(size)) {}
+
+	std::shared_ptr<HirType> type;
+	TokenLit size;
+
+	static HirArray parse(BasicParser &t) {
+		auto lbracket = t.consume<TokenDelim>(Delim::LBRACKET);
+		auto type = std::make_shared<HirType>(HirType::parse(t));
+		t.consume<TokenDelim>(Delim::SEMICOLON);
+		auto size = t.consume<TokenLit>();
+		auto rbracket = t.consume<TokenDelim>(Delim::RBRACKET);
+
+		return HirArray{lbracket.span().merge(rbracket.span()), type, size};
+	}
+};
+
+HirType HirType::parse(BasicParser &t) {
+	if (t.peek<TokenDelim>(Delim::LBRACKET)) {
+		auto arr = HirArray::parse(t);
+		return HirType{arr.span(), std::make_shared<HirArray>(std::move(arr))};
+	}
+
+	auto item = HirPath::parse(t);
+
+	return HirType{item.span(), std::move(item)};
+}
+
 template <> struct std::hash<HirPath> {
 	std::size_t operator()(const HirPath &path) const { return path.hash(); }
 };
 
 class HirTypedIdent : public BaseHir {
 public:
-	HirTypedIdent(Span span, TokenIdent ident, std::optional<HirPath> type)
+	HirTypedIdent(Span span, TokenIdent ident, std::optional<HirType> type)
 			: BaseHir(span), ident(ident), type(std::move(type)) {}
 
 	TokenIdent ident;
-	std::optional<HirPath> type;
+	std::optional<HirType> type;
 
 	static HirTypedIdent parse(BasicParser &t) {
 		auto ident = t.consume<TokenIdent>();
 		Span span = ident.span();
 
-		std::optional<HirPath> type;
+		std::optional<HirType> type;
 
 		if (auto colon = t.tryConsume<TokenDelim>(Delim::COLON)) {
-			auto ty = HirPath::parse(t);
+			auto ty = HirType::parse(t);
 
+			span = span.merge(ty.span);
 			type = std::move(ty);
-			span = span.merge(ty.span());
 		}
 
 		return HirTypedIdent{span, ident, type};
@@ -291,12 +379,8 @@ public:
 	static HirReassign parse(BasicParser &t) {
 		std::size_t derefCount = 0;
 
-		while (auto op = t.tryConsume<TokenOp>(Op::MUL, Op::POW)) {
-			if (op->variant == Op::POW) {
-				derefCount += 2;
-			} else {
-				derefCount++;
-			}
+		while (t.tryConsume<TokenOp>(Op::MUL)) {
+			derefCount++;
 		}
 
 		auto path = HirStructPath::parse(t);
@@ -336,6 +420,56 @@ public:
 	}
 
 	static std::optional<HirReturn> tryParse(BasicParser &t) {
+		auto tx = t.tx();
+
+		try {
+			auto hir = parse(t);
+			tx.commit();
+			return hir;
+		} catch (std::runtime_error &e) {
+			return std::nullopt;
+		}
+	}
+};
+
+class HirBreak : public BaseHir {
+public:
+	HirBreak(Span span, TokenKeyword br) : BaseHir(span), br(br) {}
+
+	TokenKeyword br;
+
+	static HirBreak parse(BasicParser &t) {
+		auto br = t.consume<TokenKeyword>(Keyword::BREAK);
+
+		return HirBreak{br.span(), br};
+	}
+
+	static std::optional<HirBreak> tryParse(BasicParser &t) {
+		auto tx = t.tx();
+
+		try {
+			auto hir = parse(t);
+			tx.commit();
+			return hir;
+		} catch (std::runtime_error &e) {
+			return std::nullopt;
+		}
+	}
+};
+
+class HirContinue : public BaseHir {
+public:
+	HirContinue(Span span, TokenKeyword cont) : BaseHir(span), cont(cont) {}
+
+	TokenKeyword cont;
+
+	static HirContinue parse(BasicParser &t) {
+		auto cont = t.consume<TokenKeyword>(Keyword::CONTINUE);
+
+		return HirContinue{cont.span(), cont};
+	}
+
+	static std::optional<HirContinue> tryParse(BasicParser &t) {
 		auto tx = t.tx();
 
 		try {
@@ -405,8 +539,8 @@ class HirIf;
 class HirWhile;
 
 using HirStmtItem =
-		std::variant<HirAssign, HirReassign, HirReturn, HirFnCall,
-								 std::shared_ptr<HirFor>, std::shared_ptr<HirIf>,
+		std::variant<HirAssign, HirReassign, HirReturn, HirFnCall, HirBreak,
+								 HirContinue, std::shared_ptr<HirFor>, std::shared_ptr<HirIf>,
 								 std::shared_ptr<HirWhile>>;
 
 class HirStmt : public BaseHir {
@@ -419,7 +553,9 @@ public:
 		return std::holds_alternative<HirAssign>(stmt) ||
 					 std::holds_alternative<HirReassign>(stmt) ||
 					 std::holds_alternative<HirReturn>(stmt) ||
-					 std::holds_alternative<HirFnCall>(stmt);
+					 std::holds_alternative<HirFnCall>(stmt) ||
+					 std::holds_alternative<HirBreak>(stmt) ||
+					 std::holds_alternative<HirContinue>(stmt);
 	}
 
 	static HirStmt parse(BasicParser &t);
@@ -542,6 +678,68 @@ public:
 
 		return HirStructFieldAssign{ident.span().merge(expr.span()), ident, colon,
 																std::move(expr)};
+	}
+};
+
+class HirArrayInstance : public BaseHir {
+public:
+	HirArrayInstance(Span span, std::vector<HirExpr> values, HirExpr size)
+			: BaseHir(span), values(std::move(values)), size(size) {}
+
+	std::vector<HirExpr> values;
+	HirExpr size;
+
+	static HirArrayInstance parse(BasicParser &t) {
+		auto lbracket = t.consume<TokenDelim>(Delim::LBRACKET);
+		auto rbracket = t.peek<TokenDelim>(Delim::RBRACKET);
+
+		std::vector<HirExpr> values;
+
+		while (!rbracket) {
+			auto value = HirExpr::parse(t);
+			values.push_back(value);
+
+			if (values.size() == 1) {
+				if (t.tryConsume<TokenDelim>(Delim::SEMICOLON)) {
+					auto size = HirExpr::parse(t);
+
+					rbracket = t.consume<TokenDelim>(Delim::RBRACKET);
+					return HirArrayInstance{lbracket.span().merge(rbracket->span()),
+																	std::move(values), size};
+				}
+			}
+
+			rbracket = t.peek<TokenDelim>(Delim::RBRACKET);
+
+			if (rbracket) {
+				break;
+			} else {
+				t.consume<TokenDelim>(Delim::COMMA);
+			}
+		}
+
+		auto s = HirExpr{Span{}, TokenLit{Span{}, int(values.size())}};
+
+		t.tryConsume<TokenDelim>(Delim::COMMA);
+		rbracket = t.consume<TokenDelim>(Delim::RBRACKET);
+
+		std::size_t size = values.size();
+
+		return HirArrayInstance{lbracket.span().merge(rbracket->span()),
+														std::move(values),
+														HirExpr{Span{}, TokenLit{Span{}, int(size)}}};
+	}
+
+	static std::optional<HirArrayInstance> tryParse(BasicParser &t) {
+		auto tx = t.tx();
+
+		try {
+			auto hir = parse(t);
+			tx.commit();
+			return hir;
+		} catch (std::runtime_error &e) {
+			return std::nullopt;
+		}
 	}
 };
 
@@ -820,6 +1018,14 @@ HirStmt HirStmt::parse(BasicParser &t) {
 		return HirStmt{ret->span(), std::move(*ret)};
 	}
 
+	if (auto br = HirBreak::tryParse(t)) {
+		return HirStmt{br->span(), std::move(*br)};
+	}
+
+	if (auto cont = HirContinue::tryParse(t)) {
+		return HirStmt{cont->span(), std::move(*cont)};
+	}
+
 	if (auto fnCall = HirFnCall::tryParse(t)) {
 		return HirStmt{fnCall->span(), std::move(*fnCall)};
 	}
@@ -976,7 +1182,7 @@ template <int P> HirExpr HirExpr::parse(BasicParser &t) {
 	return expr;
 }
 
-template <> HirExpr HirExpr::parse<13>(BasicParser &t) {
+template <> HirExpr HirExpr::parse<12>(BasicParser &t) {
 	if (auto lit = t.tryConsume<TokenLit>()) {
 		return HirExpr{lit->span(), *lit};
 	}
@@ -985,9 +1191,17 @@ template <> HirExpr HirExpr::parse<13>(BasicParser &t) {
 		return HirExpr{fnCall->span(), std::make_shared<HirFnCall>(*fnCall)};
 	}
 
+	if (auto array = HirArrayInstance::tryParse(t)) {
+		return HirExpr{array->span(), std::make_shared<HirArrayInstance>(*array)};
+	}
+
 	if (auto struct_ = HirStructInstance::tryParse(t)) {
 		return HirExpr{struct_->span(),
 									 std::make_shared<HirStructInstance>(*struct_)};
+	}
+
+	if (auto path = HirArrayPath::tryParse(t)) {
+		return HirExpr{path->span(), std::make_shared<HirArrayPath>(*path)};
 	}
 
 	if (auto path = HirStructPath::tryParse(t)) {
@@ -1007,26 +1221,9 @@ template <> HirExpr HirExpr::parse<13>(BasicParser &t) {
 		return expr;
 	}
 
-	if (auto unOp = t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND, Op::MUL,
-																				Op::POW)) {
-		auto expr = HirExpr::parse<13>(t);
-
-		// convert to 2 BIT_ANDs
-		if (unOp->variant == Op::POW) {
-			Span span = unOp->span();
-			span.start.index++;
-			span.start.column++;
-			auto localUnOp = TokenOp{span, Op::MUL};
-
-			Span otherSpan = unOp->span();
-			otherSpan.end.index--;
-			otherSpan.end.column--;
-			unOp = TokenOp{otherSpan, Op::MUL};
-
-			expr = HirExpr{unOp->span().merge(expr.span()),
-										 std::make_shared<HirUnOp>(
-												 localUnOp.span().merge(expr.span()), localUnOp, expr)};
-		}
+	if (auto unOp =
+					t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND, Op::MUL)) {
+		auto expr = HirExpr::parse<12>(t);
 
 		return HirExpr{unOp->span().merge(expr.span()),
 									 std::make_shared<HirUnOp>(unOp->span().merge(expr.span()),

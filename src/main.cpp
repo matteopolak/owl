@@ -38,7 +38,7 @@ int main() {
 
 		llir.lower();
 		llir.compileObjectFile(llvm::OptimizationLevel::O3,
-													 llvm::ThinOrFullLTOPhase::None, true);
+													 llvm::ThinOrFullLTOPhase::None, false);
 		llir.module.print(llvm::errs(), nullptr);
 		llir.link();
 	} catch (Error &error) {

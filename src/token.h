@@ -79,7 +79,19 @@ public:
 	TokenLit(Span span, TokenLitType value);
 
 	TokenLitType value;
-	std::string type() const { return "lit"; }
+	std::string type() const {
+		if (std::holds_alternative<int>(value)) {
+			return "integer";
+		} else if (std::holds_alternative<double>(value)) {
+			return "float";
+		} else if (std::holds_alternative<std::string>(value)) {
+			return "string";
+		} else if (std::holds_alternative<bool>(value)) {
+			return "bool";
+		}
+
+		throw std::runtime_error("unknown literal type");
+	}
 
 	static std::optional<TokenLit> parse(BasicTokenizer &t) {
 		if (auto lit = parseStringLit(t)) {
@@ -178,9 +190,6 @@ enum class Op {
 	DIV,
 	MOD,
 	POW,
-	AND,
-	OR,
-	NOT,
 	EQEQ,
 	EQ,
 	NEQ,
@@ -199,6 +208,9 @@ enum class Op {
 	// not parsed, used by the parser
 	LPAREN,
 	RPAREN,
+	AND,
+	OR,
+	NOT,
 
 	// used in `extern` functions for variadics
 	ELLIPSIS,
@@ -234,20 +246,18 @@ public:
 		case Op::DIV:
 		case Op::MOD:
 			return 6;
-		case Op::POW:
-			return 7;
 		case Op::NOT:
 		case Op::BIT_NOT:
-			return 8;
+			return 7;
 		case Op::BIT_AND:
-			return 9;
+			return 8;
 		case Op::BIT_OR:
-			return 10;
+			return 9;
 		case Op::BIT_XOR:
-			return 11;
+			return 10;
 		case Op::BIT_LSHIFT:
 		case Op::BIT_RSHIFT:
-			return 12;
+			return 11;
 		default:
 			return 0;
 		}
@@ -262,8 +272,6 @@ public:
 			op = Op::ADD;
 		} else if (t.tryConsume("-")) {
 			op = Op::SUB;
-		} else if (t.tryConsume("**")) {
-			op = Op::POW;
 		} else if (t.tryConsume("*")) {
 			op = Op::MUL;
 		} else if (t.tryConsume("/")) {
@@ -278,12 +286,6 @@ public:
 			op = Op::BIT_LSHIFT;
 		} else if (t.tryConsume(">>")) {
 			op = Op::BIT_RSHIFT;
-		} else if (t.tryConsume("&&")) {
-			op = Op::AND;
-		} else if (t.tryConsume("||")) {
-			op = Op::OR;
-		} else if (t.tryConsume("!")) {
-			op = Op::NOT;
 		} else if (t.tryConsume("==")) {
 			op = Op::EQEQ;
 		} else if (t.tryConsume("&")) {
@@ -327,14 +329,6 @@ public:
 			return "/";
 		case Op::MOD:
 			return "%";
-		case Op::POW:
-			return "**";
-		case Op::AND:
-			return "&&";
-		case Op::OR:
-			return "||";
-		case Op::NOT:
-			return "!";
 		case Op::EQEQ:
 			return "==";
 		case Op::EQ:
@@ -367,6 +361,12 @@ public:
 			return ")";
 		case Op::ELLIPSIS:
 			return "...";
+		case Op::AND:
+			return "and";
+		case Op::OR:
+			return "or";
+		case Op::NOT:
+			return "not";
 		default:
 			throw std::runtime_error("op str not implemented");
 		}
@@ -383,18 +383,18 @@ public:
 };
 
 enum class Delim {
-	LPAREN,
-	RPAREN,
-	LBRACE,
-	RBRACE,
-	LBRACKET,
-	RBRACKET,
-	COMMA,
-	SEMICOLON,
-	LANGLE,
-	RANGLE,
-	COLON,
-	PERIOD,
+	LPAREN,		 // (
+	RPAREN,		 // )
+	LBRACE,		 // {
+	RBRACE,		 // }
+	LBRACKET,	 // [
+	RBRACKET,	 // ]
+	COMMA,		 // ,
+	SEMICOLON, // ;
+	LANGLE,		 // <
+	RANGLE,		 // >
+	COLON,		 // :
+	PERIOD,		 // .
 	// not parsed, is created by the tokenizer
 	COLON_COLON
 };
@@ -515,7 +515,10 @@ enum class Keyword {
 	EXPORT,
 	EXTERN,
 	CONST,
-	SUPER
+	SUPER,
+	AND,
+	OR,
+	NOT
 };
 
 class TokenKeyword : public BaseToken {
@@ -566,6 +569,12 @@ public:
 			keyword = Keyword::LOOP;
 		} else if (v == "super") {
 			keyword = Keyword::SUPER;
+		} else if (v == "and") {
+			keyword = Keyword::AND;
+		} else if (v == "or") {
+			keyword = Keyword::OR;
+		} else if (v == "not") {
+			keyword = Keyword::NOT;
 		} else {
 			return std::nullopt;
 		}
@@ -611,6 +620,12 @@ public:
 			return "const";
 		case Keyword::SUPER:
 			return "super";
+		case Keyword::AND:
+			return "and";
+		case Keyword::OR:
+			return "or";
+		case Keyword::NOT:
+			return "not";
 		default:
 			throw std::runtime_error("keyword str not implemented");
 		}

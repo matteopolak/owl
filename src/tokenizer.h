@@ -94,6 +94,14 @@ private:
 		// ident (then special case keywords)
 		if (auto ident = TokenIdent::parse(*this)) {
 			if (auto keyword = TokenKeyword::tryFrom(*ident)) {
+				if (keyword->variant == Keyword::AND) {
+					return TokenOp{ident->span(), Op::AND};
+				} else if (keyword->variant == Keyword::OR) {
+					return TokenOp{ident->span(), Op::OR};
+				} else if (keyword->variant == Keyword::NOT) {
+					return TokenOp{ident->span(), Op::NOT};
+				}
+
 				return *keyword;
 			}
 
