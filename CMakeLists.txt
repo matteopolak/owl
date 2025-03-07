@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD 20)
 find_package(fmt CONFIG REQUIRED)
 find_path(RANG_INCLUDE_DIRS "rang.hpp")
 find_package(LLVM CONFIG REQUIRED)
+find_package(argparse CONFIG REQUIRED)
 
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
@@ -27,4 +28,5 @@ add_executable(owl ${SOURCES})
 
 target_include_directories(owl PRIVATE ${RANG_INCLUDE_DIRS})
 target_link_libraries(owl PRIVATE fmt::fmt)
+target_link_libraries(owl PRIVATE argparse::argparse)
 target_link_libraries(owl PRIVATE ${llvm_libs})

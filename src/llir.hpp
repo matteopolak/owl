@@ -230,13 +230,9 @@ public:
 		}
 	}
 
-	void compileObjectFile() {
-		compileObjectFile(llvm::OptimizationLevel::O3,
-											llvm::ThinOrFullLTOPhase::None, false);
-	}
-
-	void compileObjectFile(llvm::OptimizationLevel level,
-												 llvm::ThinOrFullLTOPhase phase, bool optimize = true) {
+	void compileObjectFile(std::filesystem::path output,
+												 llvm::OptimizationLevel level,
+												 llvm::ThinOrFullLTOPhase phase) {
 		if (llvm::verifyModule(module, &llvm::errs())) {
 			llvm::errs() << "Error: Module verification failed!\n";
 			return;
@@ -265,49 +261,47 @@ public:
 
 		module.setDataLayout(targetMachine->createDataLayout());
 
-		if (optimize) {
-			llvm::PassBuilder passBuilder;
+		llvm::PassBuilder passBuilder;
 
-			llvm::LoopAnalysisManager loopAnalysisManager;
-			llvm::FunctionAnalysisManager functionAnalysisManager;
-			llvm::CGSCCAnalysisManager cgsccAnalysisManager;
-			llvm::ModuleAnalysisManager moduleAnalysisManager;
+		llvm::LoopAnalysisManager loopAnalysisManager;
+		llvm::FunctionAnalysisManager functionAnalysisManager;
+		llvm::CGSCCAnalysisManager cgsccAnalysisManager;
+		llvm::ModuleAnalysisManager moduleAnalysisManager;
 
-			passBuilder.registerModuleAnalyses(moduleAnalysisManager);
-			passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
-			passBuilder.registerFunctionAnalyses(functionAnalysisManager);
-			passBuilder.registerLoopAnalyses(loopAnalysisManager);
-			passBuilder.crossRegisterProxies(
-					loopAnalysisManager, functionAnalysisManager, cgsccAnalysisManager,
-					moduleAnalysisManager);
+		passBuilder.registerModuleAnalyses(moduleAnalysisManager);
+		passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
+		passBuilder.registerFunctionAnalyses(functionAnalysisManager);
+		passBuilder.registerLoopAnalyses(loopAnalysisManager);
+		passBuilder.crossRegisterProxies(
+				loopAnalysisManager, functionAnalysisManager, cgsccAnalysisManager,
+				moduleAnalysisManager);
 
-			llvm::ModulePassManager modulePassManager;
+		llvm::ModulePassManager modulePassManager;
 
-			modulePassManager.addPass(
-					passBuilder.buildModuleSimplificationPipeline(level, phase));
+		modulePassManager.addPass(
+				passBuilder.buildModuleSimplificationPipeline(level, phase));
 
-			llvm::FunctionPassManager functionPassManager;
+		llvm::FunctionPassManager functionPassManager;
 
-			functionPassManager.addPass(llvm::PromotePass());
-			functionPassManager.addPass(llvm::InstCombinePass());
-			functionPassManager.addPass(llvm::ReassociatePass());
+		functionPassManager.addPass(llvm::PromotePass());
+		functionPassManager.addPass(llvm::InstCombinePass());
+		functionPassManager.addPass(llvm::ReassociatePass());
 
-			modulePassManager.addPass(llvm::createModuleToFunctionPassAdaptor(
-					std::move(functionPassManager)));
+		modulePassManager.addPass(llvm::createModuleToFunctionPassAdaptor(
+				std::move(functionPassManager)));
 
-			modulePassManager.run(module, moduleAnalysisManager);
-		}
+		modulePassManager.run(module, moduleAnalysisManager);
 
 		std::error_code ec;
 
-		ec = llvm::sys::fs::create_directory("target");
+		ec = llvm::sys::fs::create_directory(output.parent_path().string());
 
 		if (ec) {
 			llvm::errs() << "Error creating directory: " << ec.message();
 			return;
 		}
 
-		llvm::raw_fd_ostream dest("target/output.o", ec, llvm::sys::fs::OF_None);
+		llvm::raw_fd_ostream dest(output.string(), ec, llvm::sys::fs::OF_None);
 		if (ec) {
 			llvm::errs() << "Error opening file: " << ec.message();
 			return;
@@ -324,21 +318,24 @@ public:
 		dest.flush();
 	}
 
-	void link() {
+	void link(std::filesystem::path objectFile, std::filesystem::path output) {
 		std::string linker;
 		std::vector<std::string> args;
-		std::string outputBinary = "target/output";
 
 		if (llvm::Triple(llvm::sys::getProcessTriple()).isOSWindows()) {
 			linker = "link.exe";
-			args = {linker,				"/entry:_start",				"/subsystem:console",
-							"msvcrt.lib", "/out:" + outputBinary, "target/output.o"};
+			args = {linker,
+							"/entry:_start",
+							"/subsystem:console",
+							"msvcrt.lib",
+							"/out:" + output.string() = ".exe",
+							objectFile.string()};
 		} else if (llvm::Triple(llvm::sys::getProcessTriple()).isMacOSX()) {
 			linker = "ld";
 			args = {linker,
 							"-o",
-							outputBinary,
-							"target/output.o",
+							output.string(),
+							objectFile.string(),
 							"-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib",
 							"-lc",
 							"-lSystem"};
@@ -347,8 +344,8 @@ public:
 			linker = "/usr/bin/ld";
 			args = {linker,
 							"-o",
-							outputBinary,
-							"target/output.o",
+							output.string(),
+							objectFile.string(),
 							"-L/lib",
 							"-L/usr/lib",
 							"-lc",
@@ -370,8 +367,6 @@ public:
 
 		if (result != 0) {
 			llvm::errs() << "Linking failed: " << errMsg << "\n";
-		} else {
-			llvm::outs() << "Successfully linked " << outputBinary << "\n";
 		}
 	}
 
