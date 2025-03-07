@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "rang.hpp"
+#include "../include/rang.hpp"
 #include <fmt/core.h>
 
 #include "span.hpp"

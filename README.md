@@ -58,8 +58,12 @@ fn main(): i32 {
 
 ## Installation
 
+First, [install Bazel](https://bazel.build/install).
+
 ```sh
-make install
+bazel build owl
+# run it
+./bazel-bin/owl --help
 ```
 
 ## Errors

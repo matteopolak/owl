@@ -1,0 +1,15 @@
+cc_binary(
+	name = "owl",
+	srcs = glob(["src/*.cpp", "src/*.hpp", "include/*.hpp"]),
+	deps = [
+		"@fmt",
+		"@argparse",
+		"@llvm-project//llvm:Core",
+		"@llvm-project//llvm:Support",
+		"@llvm-project//llvm:Passes",
+		"@llvm-project//llvm:Analysis",
+		"@llvm-project//llvm:Target",
+		"@llvm-project//llvm:CodeGen",
+		"@llvm-project//llvm:MC",
+	]
+)

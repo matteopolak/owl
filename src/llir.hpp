@@ -238,9 +238,6 @@ public:
 			return;
 		}
 
-		llvm::InitializeNativeTarget();
-		llvm::InitializeNativeTargetAsmPrinter();
-
 		std::string targetTriple = llvm::sys::getDefaultTargetTriple();
 		module.setTargetTriple(targetTriple);
 
@@ -308,8 +305,9 @@ public:
 		}
 
 		llvm::legacy::PassManager codeGenPassManager;
-		if (targetMachine->addPassesToEmitFile(codeGenPassManager, dest, nullptr,
-																					 llvm::CodeGenFileType::ObjectFile)) {
+		if (targetMachine->addPassesToEmitFile(
+						codeGenPassManager, dest, nullptr,
+						llvm::CodeGenFileType::CGFT_ObjectFile)) {
 			llvm::errs() << "Error: TargetMachine can't emit object file";
 			return;
 		}
