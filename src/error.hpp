@@ -88,7 +88,8 @@ private:
 
 		lineStartIndex = startOfLast - 1;
 
-		for (std::size_t i = 0; i < lineCount - 1; i++) {
+		for (std::size_t i = 0;
+				 i < lineCount - 1 && lineStartIndex != std::string::npos; i++) {
 			std::size_t startOfLine = source.rfind('\n', lineStartIndex - 1);
 
 			if (startOfLine == std::string::npos) {

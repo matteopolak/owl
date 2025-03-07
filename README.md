@@ -116,13 +116,7 @@ error: mismatched types for argument `fmt` in call to function `printf`
              ^
     note: expected `*char`, found `i32`
 
-1 | extern fn printf(fmt: *char, ...)
-2 |
-3 | fn main(): i32 {
-4 |   printf(1);
-5 | }
-6 |
-7 | extern fn printf(fmt: *char, ...);
+1 | extern fn printf(fmt: *char, ...);
                      ^^^
     note: argument defined here
 ```
