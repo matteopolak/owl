@@ -56,6 +56,12 @@ fn main(): i32 {
 }
 ```
 
+## Installation
+
+```sh
+make install
+```
+
 ## Errors
 
 ```

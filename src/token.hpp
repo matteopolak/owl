@@ -7,6 +7,7 @@
 #include <fmt/core.h>
 
 #include "basic_tokenizer.hpp"
+#include "error.hpp"
 #include "span.hpp"
 
 namespace token {
@@ -19,7 +20,8 @@ public:
 	BaseToken() = delete;
 
 	Span span() const { return span_; }
-	std::string type() const;
+	static std::string type();
+	std::string str() const { return type(); }
 
 protected:
 	Span span_;
@@ -30,6 +32,7 @@ public:
 	TokenEof(Span span);
 
 	static std::string type() { return "eof"; }
+	std::string str() const { return "eof"; }
 };
 
 class TokenIdent : public BaseToken {
@@ -37,7 +40,9 @@ public:
 	TokenIdent(Span span, std::string value);
 
 	std::string &value() { return value_; }
-	std::string type() const { return fmt::format("ident({})", value_); }
+
+	static std::string type() { return "identifier"; }
+	std::string str() const { return "identifier"; }
 
 	static std::optional<TokenIdent> parse(BasicTokenizer &t) {
 		std::string value;
@@ -79,7 +84,10 @@ public:
 	TokenLit(Span span, TokenLitType value);
 
 	TokenLitType value;
-	std::string type() const {
+
+	static std::string type() { return "literal"; }
+
+	std::string str() const {
 		if (std::holds_alternative<int>(value)) {
 			return "integer";
 		} else if (std::holds_alternative<double>(value)) {
@@ -140,7 +148,8 @@ private:
 				} else if (t.tryConsume("0")) {
 					value += "\0";
 				} else {
-					throw std::runtime_error("invalid escape sequence");
+					throw Error(fmt::format("unknown escape sequence {}", t.nextChar()),
+											{{t.endSpan(), "escape sequence here"}});
 				}
 			} else if (t.startsWith("\"")) {
 				break;
@@ -149,9 +158,7 @@ private:
 			}
 		}
 
-		if (!t.tryConsume("\"")) {
-			throw std::runtime_error("unterminated string literal");
-		}
+		t.consume("\"");
 
 		return TokenLit(t.endSpan(), value);
 	}
@@ -159,6 +166,7 @@ private:
 	static std::optional<TokenLit> parseNumberLit(BasicTokenizer &t) {
 		std::string value;
 
+		// TODO: add number literal types
 		if (auto d = t.tryNextDigit()) {
 			value += *d;
 		} else {
@@ -221,7 +229,8 @@ public:
 
 	TokenOp(Span span, Op op);
 
-	std::string type() const { return "op"; }
+	static std::string type() { return "operator"; }
+	std::string str() const { return fmt::format("operator `{}`", str(variant)); }
 
 	int precedence() {
 		switch (variant) {
@@ -404,7 +413,8 @@ public:
 
 	TokenDelim(Span span, Delim delim);
 
-	std::string type() const { return fmt::format("delim({})", str(variant)); }
+	static std::string type() { return "delimiter"; }
+	std::string str() const { return str(variant); }
 
 	static std::optional<TokenDelim> parse(BasicTokenizer &t) {
 		Delim delim;
@@ -526,7 +536,8 @@ public:
 
 	TokenKeyword(Span span, Keyword keyword);
 
-	std::string type() const { return fmt::format("keyword({})", str(variant)); }
+	static std::string type() { return "keyword"; }
+	std::string str() const { return fmt::format("`{}`", str(variant)); }
 
 	static std::optional<TokenKeyword> tryFrom(TokenIdent &ident) {
 		std::string v = ident.value();
@@ -645,7 +656,8 @@ class TokenComment : public BaseToken {
 public:
 	TokenComment(Span span, std::string value);
 
-	std::string type() const { return "comment"; }
+	static std::string type() { return "comment"; }
+	std::string str() const { return "comment"; }
 
 	static std::optional<TokenComment> parse(BasicTokenizer &t) {
 		if (!t.tryConsume("//")) {

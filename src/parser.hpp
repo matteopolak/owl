@@ -54,9 +54,11 @@ private:
 		}
 
 		auto token = consume();
-		std::string type = std::visit([](auto &&arg) { return arg.type(); }, token);
+		std::string type = std::visit([](auto &&arg) { return arg.str(); }, token);
+		Span span = std::visit([](auto &&arg) { return arg.span(); }, token);
 
-		throw std::runtime_error(fmt::format("unexpected token (main): {}", type));
+		throw Error(fmt::format("unexpected {}", type),
+								{{span, "unexpected token here"}});
 	}
 
 	// generic function that takes another function and wraps it in a try/catch.

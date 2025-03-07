@@ -1,0 +1,11 @@
+module(name = "owl", version = "1.0.0")
+
+bazel_dep(name = "fmt", version = "11.1.4")
+bazel_dep(name = "argparse", version = "3.0.0")
+bazel_dep(name = "llvm-project", version = "17.0.3")
+
+http_archive(
+	name = "rang",
+	url = "https://github.com/agauniyal/rang/releases/download/v3.2/rang.hpp",
+	sha256 = "e487100719a8ffd43d08989ce459313858c0ae67c632a8a28afcdbcdeeda10a4"
+)

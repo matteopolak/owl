@@ -1,9 +1,11 @@
-# Build directories
-/build/
-/out/
-/bin/
-/lib/
 /target/
+/bazel-out/
+/bazel-bin/
+/bazel-owl/
+/bazel-testlogs/
+
+/build/
+*.owl
 
 # CMake-generated files
 /CMakeCache.txt

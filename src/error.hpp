@@ -86,19 +86,24 @@ private:
 		lineStarts.push_back(
 				source.substr(lineStartIndex, endOfLast - lineStartIndex));
 
-		lineStartIndex = startOfLast - 1;
+		lineStartIndex -= 1;
 
-		for (std::size_t i = 0;
-				 i < lineCount - 1 && lineStartIndex != std::string::npos; i++) {
+		for (std::size_t i = 0; i < lineCount - 1 && lineStartIndex > 0; i++) {
 			std::size_t startOfLine = source.rfind('\n', lineStartIndex - 1);
 
 			if (startOfLine == std::string::npos) {
-				lineStarts.push_back(source.substr(0, lineStartIndex - 1));
+				lineStarts.push_back(source.substr(0, lineStartIndex));
 				break;
 			}
 
 			lineStarts.push_back(
 					source.substr(startOfLine + 1, lineStartIndex - startOfLine - 1));
+
+			if (startOfLine == 0) {
+				lineStarts.push_back("");
+				break;
+			}
+
 			lineStartIndex = startOfLine;
 		}
 

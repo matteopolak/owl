@@ -14,4 +14,3 @@ clean:
 	rm -f compile_commands.json
 
 .PHONY: all build configure compdb clean
-

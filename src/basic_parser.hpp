@@ -15,12 +15,18 @@ public:
 	ParserTransaction(BasicParser &parser);
 	~ParserTransaction();
 
+	BasicParser &parser;
+
 	void commit() { rollback = false; }
+	void anchor() { canRollback = false; }
+
+	template <typename T, typename... Args> T consume(Args... args);
+	Token consume();
 
 private:
-	BasicParser &parser;
 	std::size_t index;
 	bool rollback = true;
+	bool canRollback = true;
 };
 
 template <typename First, typename... Rest>
@@ -42,92 +48,15 @@ public:
 
 	ParserTransaction tx() { return ParserTransaction(*this); }
 
-	template <typename T> T consume() {
-		if (index >= tokens.size()) {
-			throw std::runtime_error("unexpected eof");
-		}
-
-		auto token = get(index);
-
-		if (auto t = std::get_if<T>(&token)) {
-			index++;
-			return *t;
-		} else {
-			std::string type =
-					std::visit([](auto &&arg) { return arg.type(); }, token);
-
-			throw std::runtime_error(
-					fmt::format("unexpected token (basic): {}", type));
-		}
-	}
-
-	template <typename T, typename... Args> T consume(Args... args) {
-		static_assert(sizeof...(Args) > 0);
-
-		auto t = consume();
-
-		if (auto token = std::get_if<T>(&t)) {
-			for (auto arg : {args...}) {
-				if (token->variant == arg) {
-					return *token;
-				}
-			}
-
-			--index;
-
-			if constexpr (sizeof...(Args) == 1) {
-				auto arg = get_first(args...);
-
-				throw std::runtime_error(
-						fmt::format("expected `{}`, found `{}`", arg, token->variant));
-			} else {
-				std::string expected = fmt::format("`{}`", get_first(args...));
-
-				for (auto arg : get_rest(args...)) {
-					expected += fmt::format(", `{}`", arg);
-				}
-
-				throw std::runtime_error(fmt::format("expected one of {}, found `{}`",
-																						 expected, token->variant));
-			}
-		}
-
-		--index;
-
-		if constexpr (sizeof...(Args) == 1) {
-			std::string type = std::visit([](auto &&arg) { return arg.type(); }, t);
-			auto variant = get_first(args...);
-
-			throw std::runtime_error(
-					fmt::format("expected `{}`, found {}", variant, type));
-		} else {
-			std::string type = std::visit([](auto &&arg) { return arg.type(); }, t);
-			std::string expected = fmt::format("`{}`", get_first(args...));
-
-			for (auto arg : get_rest(args...)) {
-				expected += fmt::format(", `{}`", arg);
-			}
-
-			throw std::runtime_error(
-					fmt::format("expected one of {}, found {}", expected, type));
-		}
-	}
-
-	Token consume() {
-		if (index >= tokens.size()) {
-			throw std::runtime_error("unexpected eof");
-		}
-
-		return get(index++);
-	}
-
 	// forward tryConsume to consume but wrap it in a try/catch to return
 	// optional<T> instead
 	template <typename T, typename... Args>
 	std::optional<T> tryConsume(Args... args) {
 		try {
 			return consume<T>(args...);
-		} catch (std::runtime_error &e) {
+		} catch (std::runtime_error &) {
+			return std::nullopt;
+		} catch (Error &) {
 			return std::nullopt;
 		}
 	}
@@ -150,20 +79,6 @@ public:
 		return token;
 	}
 
-	template <typename T, typename... Args> std::optional<T> peek2(Args... args) {
-		index++;
-
-		auto token = tryConsume<T>(args...);
-
-		if (token) {
-			index -= 2;
-		} else {
-			index--;
-		}
-
-		return token;
-	}
-
 	bool isEmpty() { return index >= tokens.size(); }
 
 	std::size_t index = 0;
@@ -174,6 +89,99 @@ private:
 	friend class ParserTransaction;
 
 	Token get(std::size_t i) { return tokens[i]; }
+
+public:
+	template <typename T> T consume() {
+		if (index >= tokens.size()) {
+			throw Error("unexpected eof",
+									{
+											{tokenizer.endSpan(), "unexpected eof here"},
+									});
+		}
+
+		auto token = get(index);
+
+		if (auto t = std::get_if<T>(&token)) {
+			index++;
+			return *t;
+		} else {
+			std::string expected = T::type();
+
+			std::string type =
+					std::visit([](auto &&arg) { return arg.type(); }, token);
+			Span span = std::visit([](auto &&arg) { return arg.span(); }, token);
+
+			throw Error(fmt::format("expected {}, found {}", expected, type),
+									{{span, "unexpected token here"}});
+		}
+	}
+
+	template <typename T, typename... Args> T consume(Args... args) {
+		static_assert(sizeof...(Args) > 0);
+
+		auto t = consume();
+
+		if (auto token = std::get_if<T>(&t)) {
+			for (auto arg : {args...}) {
+				if (token->variant == arg) {
+					return *token;
+				}
+			}
+
+			--index;
+
+			if constexpr (sizeof...(Args) == 1) {
+				auto arg = get_first(args...);
+
+				throw Error(
+						fmt::format("expected `{}`, found `{}`", arg, token->variant),
+						{{token->span(), "unexpected token here"}});
+			} else {
+				std::string expected = fmt::format("`{}`", get_first(args...));
+
+				for (auto arg : get_rest(args...)) {
+					expected += fmt::format(", `{}`", arg);
+				}
+
+				throw Error(fmt::format("expected one of {}, found `{}`", expected,
+																token->variant),
+										{{token->span(), "unexpected token here"}});
+			}
+		}
+
+		--index;
+
+		if constexpr (sizeof...(Args) == 1) {
+			std::string type = std::visit([](auto &&arg) { return arg.type(); }, t);
+			auto variant = get_first(args...);
+
+			throw Error(fmt::format("expected `{}`, found {}", variant, type),
+									{{std::visit([](auto &&arg) { return arg.span(); }, t),
+										"unexpected token here"}});
+		} else {
+			std::string type = std::visit([](auto &&arg) { return arg.type(); }, t);
+			Span span = std::visit([](auto &&arg) { return arg.span(); }, t);
+			std::string expected = fmt::format("`{}`", get_first(args...));
+
+			for (auto arg : get_rest(args...)) {
+				expected += fmt::format(", `{}`", arg);
+			}
+
+			throw Error(fmt::format("expected one of {}, found {}", expected, type),
+									{{span, "unexpected token here"}});
+		}
+	}
+
+	Token consume() {
+		if (index >= tokens.size()) {
+			throw Error("unexpected eof",
+									{
+											{tokenizer.endSpan(), "unexpected eof here"},
+									});
+		}
+
+		return get(index++);
+	}
 };
 
 ParserTransaction::~ParserTransaction() {
@@ -184,3 +192,10 @@ ParserTransaction::~ParserTransaction() {
 
 ParserTransaction::ParserTransaction(BasicParser &parser)
 		: parser(parser), index(parser.index) {}
+
+template <typename T, typename... Args>
+T ParserTransaction::consume(Args... args) {
+	return parser.consume<T>(args...);
+}
+
+Token ParserTransaction::consume() { return parser.consume(); }

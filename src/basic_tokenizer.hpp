@@ -15,6 +15,8 @@ public:
 	inline void startSpan() { start_ = pos; }
 	inline Span endSpan() { return Span{start_, pos}; }
 
+	bool canBacktrack = true;
+
 	// consumes the prefix. returns true if the prefix was consumed
 	bool tryConsume(std::string prefix) {
 		if (startsWith(prefix)) {
@@ -23,6 +25,12 @@ public:
 			return true;
 		}
 		return false;
+	}
+
+	void consume(std::string prefix) {
+		if (!tryConsume(prefix)) {
+			throw std::runtime_error("expected " + prefix);
+		}
 	}
 
 	std::optional<char> tryNextDigit(int base = 10) {

@@ -9,6 +9,7 @@
 #include <fmt/core.h>
 
 #include "basic_tokenizer.hpp"
+#include "error.hpp"
 #include "span.hpp"
 #include "token.hpp"
 
@@ -112,6 +113,7 @@ private:
 			return *ident;
 		}
 
-		throw std::runtime_error("unexpected character");
+		throw Error(fmt::format("unexpected character '{}'", peekChar().value()),
+								{{endSpan(), "unexpected character here"}});
 	}
 };
