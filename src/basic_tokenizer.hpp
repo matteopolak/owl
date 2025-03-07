@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "span.h"
+#include "span.hpp"
 
 class BasicTokenizer {
 public:

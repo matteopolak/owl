@@ -11,7 +11,7 @@
 #include "rang.hpp"
 #include <fmt/core.h>
 
-#include "span.h"
+#include "span.hpp"
 
 class Error : public std::exception {
 public:

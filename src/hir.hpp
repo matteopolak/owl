@@ -6,8 +6,8 @@
 #include <memory>
 #include <vector>
 
-#include "basic_parser.h"
-#include "token.h"
+#include "basic_parser.hpp"
+#include "token.hpp"
 
 class BaseHir {
 public:
@@ -100,13 +100,13 @@ public:
 	}
 };
 
+using HirAssignableItem = std::variant<HirArrayIndex, HirFieldAccess>;
+
 class HirPointerDeref;
 
-using HirAssignableItem = std::variant<HirArrayIndex, HirFieldAccess,
-																			 std::shared_ptr<HirPointerDeref>>;
-
 using HirAssignableRootItem =
-		std::variant<TokenIdent, std::shared_ptr<HirAssignable>>;
+		std::variant<TokenIdent, std::shared_ptr<HirPointerDeref>,
+								 std::shared_ptr<HirAssignable>>;
 
 class HirAssignable : public BaseHir {
 public:
@@ -160,18 +160,20 @@ HirAssignable HirAssignable::parse(BasicParser &t) {
 		auto nested = HirAssignable::parse(t);
 		t.consume<TokenDelim>(Delim::RPAREN);
 		root = std::make_shared<HirAssignable>(std::move(nested));
+	} else if (t.peek<TokenOp>(Op::MUL)) {
+		auto deref = HirPointerDeref::parse(t);
+		span = deref.span();
+		root = std::make_shared<HirPointerDeref>(std::move(deref));
 	} else {
 		auto ident = t.consume<TokenIdent>();
 		span = ident.span();
 		root = std::move(ident);
 	}
 
+	end = span;
+
 	for (;;) {
-		if (t.peek<TokenOp>(Op::MUL)) {
-			auto deref = HirPointerDeref::parse(t);
-			end = deref.span();
-			parts.push_back(std::make_shared<HirPointerDeref>(std::move(deref)));
-		} else if (t.peek<TokenDelim>(Delim::LBRACKET)) {
+		if (t.peek<TokenDelim>(Delim::LBRACKET)) {
 			auto index = HirArrayIndex::parse(t);
 			end = index.span();
 			parts.push_back(std::move(index));
@@ -206,8 +208,7 @@ public:
 	HirExpr expr;
 
 	static HirUnOp parse(BasicParser &t) {
-		auto op = t.consume<TokenOp>(Op::SUB, Op::NOT, /* ref */ Op::BIT_AND,
-																 /* deref */ Op::MUL);
+		auto op = t.consume<TokenOp>(Op::SUB, Op::NOT);
 		auto expr = HirExpr::parse(t);
 
 		return HirUnOp{op.span().merge(expr.span()), op, std::move(expr)};
@@ -453,9 +454,15 @@ public:
 
 	static HirReturn parse(BasicParser &t) {
 		auto ret = t.consume<TokenKeyword>(Keyword::RETURN);
-		auto expr = HirExpr::parse(t);
+		std::optional<HirExpr> expr;
+		Span span = ret.span();
 
-		return HirReturn{ret.span().merge(expr.span()), ret, std::move(expr)};
+		if (!t.peek<TokenDelim>(Delim::SEMICOLON)) {
+			expr = HirExpr::parse(t);
+			span = span.merge(expr->span());
+		}
+
+		return HirReturn{span, ret, std::move(expr)};
 	}
 
 	static std::optional<HirReturn> tryParse(BasicParser &t) {
@@ -1045,14 +1052,6 @@ public:
 };
 
 HirStmt HirStmt::parse(BasicParser &t) {
-	if (auto assign = HirAssign::tryParse(t)) {
-		return HirStmt{assign->span(), std::move(*assign)};
-	}
-
-	if (auto reassign = HirReassign::tryParse(t)) {
-		return HirStmt{reassign->span(), std::move(*reassign)};
-	}
-
 	if (auto ret = HirReturn::tryParse(t)) {
 		return HirStmt{ret->span(), std::move(*ret)};
 	}
@@ -1065,10 +1064,6 @@ HirStmt HirStmt::parse(BasicParser &t) {
 		return HirStmt{cont->span(), std::move(*cont)};
 	}
 
-	if (auto fnCall = HirFnCall::tryParse(t)) {
-		return HirStmt{fnCall->span(), std::move(*fnCall)};
-	}
-
 	if (auto for_ = HirFor::tryParse(t)) {
 		return HirStmt{for_->span(), std::make_shared<HirFor>(*for_)};
 	}
@@ -1079,6 +1074,18 @@ HirStmt HirStmt::parse(BasicParser &t) {
 
 	if (auto while_ = HirWhile::tryParse(t)) {
 		return HirStmt{while_->span(), std::make_shared<HirWhile>(*while_)};
+	}
+
+	if (auto assign = HirAssign::tryParse(t)) {
+		return HirStmt{assign->span(), std::move(*assign)};
+	}
+
+	if (auto fnCall = HirFnCall::tryParse(t)) {
+		return HirStmt{fnCall->span(), std::move(*fnCall)};
+	}
+
+	if (auto reassign = HirReassign::tryParse(t)) {
+		return HirStmt{reassign->span(), std::move(*reassign)};
 	}
 
 	throw std::runtime_error("todo stmt");
@@ -1256,8 +1263,7 @@ template <> HirExpr HirExpr::parse<12>(BasicParser &t) {
 		return expr;
 	}
 
-	if (auto unOp =
-					t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND, Op::MUL)) {
+	if (auto unOp = t.tryConsume<TokenOp>(Op::SUB, Op::NOT, Op::BIT_AND)) {
 		auto expr = HirExpr::parse<12>(t);
 
 		return HirExpr{unOp->span().merge(expr.span()),

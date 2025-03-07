@@ -5,8 +5,8 @@
 #include <variant>
 #include <vector>
 
-#include "token.h"
-#include "tokenizer.h"
+#include "token.hpp"
+#include "tokenizer.hpp"
 
 class BasicParser;
 

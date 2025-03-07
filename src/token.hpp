@@ -6,8 +6,8 @@
 
 #include <fmt/core.h>
 
-#include "basic_tokenizer.h"
-#include "span.h"
+#include "basic_tokenizer.hpp"
+#include "span.hpp"
 
 namespace token {
 bool isDelimiter(char c);
@@ -189,7 +189,6 @@ enum class Op {
 	MUL,
 	DIV,
 	MOD,
-	POW,
 	EQEQ,
 	EQ,
 	NEQ,

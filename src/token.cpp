@@ -1,7 +1,7 @@
 #include <string>
 
-#include "span.h"
-#include "token.h"
+#include "span.hpp"
+#include "token.hpp"
 
 TokenEof::TokenEof(Span span) : BaseToken(span) {}
 

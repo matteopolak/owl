@@ -7,11 +7,11 @@
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Support/ManagedStatic.h>
 
-#include "error.h"
-#include "llir.h"
-#include "mir.h"
-#include "parser.h"
-#include "tokenizer.h"
+#include "error.hpp"
+#include "llir.hpp"
+#include "mir.hpp"
+#include "parser.hpp"
+#include "tokenizer.hpp"
 
 int main() {
 	std::filesystem::path p = "example.owl";

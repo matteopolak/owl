@@ -8,9 +8,9 @@
 
 #include <fmt/core.h>
 
-#include "basic_tokenizer.h"
-#include "span.h"
-#include "token.h"
+#include "basic_tokenizer.hpp"
+#include "span.hpp"
+#include "token.hpp"
 
 class Tokenizer : public BasicTokenizer {
 public:

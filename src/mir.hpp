@@ -6,11 +6,11 @@
 #include <variant>
 #include <vector>
 
-#include "error.h"
-#include "hir.h"
-#include "parser.h"
-#include "span.h"
-#include "token.h"
+#include "error.hpp"
+#include "hir.hpp"
+#include "parser.hpp"
+#include "span.hpp"
+#include "token.hpp"
 
 class TypeHandle {
 public:
@@ -415,11 +415,11 @@ public:
 class MirPointerDeref;
 class MirAssignable;
 
-using MirAssignableItem = std::variant<MirArrayIndex, MirFieldAccess,
-																			 std::shared_ptr<MirPointerDeref>>;
+using MirAssignableItem = std::variant<MirArrayIndex, MirFieldAccess>;
 
 using MirAssignableRootItem =
-		std::variant<MirIdent, std::shared_ptr<MirAssignable>>;
+		std::variant<MirIdent, std::shared_ptr<MirPointerDeref>,
+								 std::shared_ptr<MirAssignable>>;
 
 class MirAssignable {
 public:
@@ -436,14 +436,17 @@ public:
 	static MirAssignable from_hir(TypeCtx &ctx, HirAssignable hir);
 
 private:
+	static MirAssignableRootItem from_hir(TypeCtx &ctx,
+																				std::shared_ptr<HirAssignable> hir) {
+		return std::make_shared<MirAssignable>(MirAssignable::from_hir(ctx, *hir));
+	}
+
 	static MirAssignableRootItem from_hir(TypeCtx &ctx, TokenIdent hir) {
 		return MirIdent::from_hir(hir);
 	}
 
 	static MirAssignableRootItem from_hir(TypeCtx &ctx,
-																				std::shared_ptr<HirAssignable> hir) {
-		return std::make_shared<MirAssignable>(MirAssignable::from_hir(ctx, *hir));
-	}
+																				std::shared_ptr<HirPointerDeref> hir);
 
 	static MirAssignableRootItem from_hir(TypeCtx &ctx,
 																				HirAssignableRootItem hir) {
@@ -459,9 +462,6 @@ private:
 																		HirFieldAccess hir) {
 		return MirFieldAccess::from_hir(ctx, parent, hir);
 	}
-
-	static MirAssignableItem from_hir(TypeCtx &ctx, TypeHandle parent,
-																		std::shared_ptr<HirPointerDeref> hir);
 
 	static MirAssignableItem from_hir(TypeCtx &ctx, TypeHandle parent,
 																		HirAssignableItem hir) {
@@ -485,9 +485,8 @@ public:
 	static MirPointerDeref from_hir(TypeCtx &ctx, HirPointerDeref hir);
 };
 
-MirAssignableItem
-MirAssignable::from_hir(TypeCtx &ctx, TypeHandle parent,
-												std::shared_ptr<HirPointerDeref> hir) {
+MirAssignableRootItem
+MirAssignable::from_hir(TypeCtx &ctx, std::shared_ptr<HirPointerDeref> hir) {
 	return std::make_shared<MirPointerDeref>(
 			MirPointerDeref::from_hir(ctx, *hir));
 }
@@ -619,7 +618,7 @@ MirPointerDeref MirPointerDeref::from_hir(TypeCtx &ctx, HirPointerDeref hir) {
 	if (!ptr) {
 		throw Error(
 				fmt::format("cannot dereference non-pointer type `{}`", type.str(ctx)),
-				{{hir.span(), "expected pointer type"}});
+				{{hir.expr.span(), "expected pointer type"}});
 	}
 
 	auto ty = ctx.getTypeLit(ptr->type);
@@ -630,12 +629,17 @@ MirPointerDeref MirPointerDeref::from_hir(TypeCtx &ctx, HirPointerDeref hir) {
 }
 
 MirAssignable MirAssignable::from_hir(TypeCtx &ctx, HirAssignable hir) {
-	auto root = from_hir(ctx, hir.root);
+	MirAssignableRootItem root = MirAssignable::from_hir(ctx, hir.root);
+
 	auto type = std::visit(
 			[&](auto &&arg) -> TypeHandle {
 				if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, MirIdent>) {
 					return ctx.scope->get(arg);
-				} else {
+				} else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>,
+																						std::shared_ptr<MirPointerDeref>>) {
+					return arg->type;
+				} else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>,
+																						std::shared_ptr<MirAssignable>>) {
 					return arg->type;
 				}
 			},
@@ -646,21 +650,7 @@ MirAssignable MirAssignable::from_hir(TypeCtx &ctx, HirAssignable hir) {
 	for (auto &part : hir.parts) {
 		auto item = from_hir(ctx, type, part);
 
-		// FIXME: this is probably wrong
-		type = std::visit(
-				[&](auto &&arg) -> TypeHandle {
-					if constexpr (std::is_same_v<std::decay_t<decltype(arg)>,
-																			 MirFieldAccess>) {
-						return arg.type;
-					} else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>,
-																							MirArrayIndex>) {
-						return arg.type;
-					} else {
-						return arg->type;
-					}
-				},
-				item);
-
+		type = std::visit([&](auto &&arg) -> TypeHandle { return arg.type; }, item);
 		parts.push_back(item);
 	}
 
@@ -815,41 +805,151 @@ public:
 			auto given = ctx.get(rhs.type);
 
 			throw std::runtime_error(fmt::format(
-					"type mismatch for operator `{}`. expected `{}`, found `{}`",
+					"unsupported operation `{}` between types `{}` and `{}`",
 					TokenOp::str(hir->op.variant), expected.str(ctx), given.str(ctx)));
 		}
 
-		return MirExpr{std::make_shared<MirBinOp>(lhs, rhs, hir->op), lhs.type};
+		// validate operators.
+		/*	ADD,
+	SUB,
+	MUL,
+	DIV,
+	MOD,
+	EQEQ,
+	EQ,
+	NEQ,
+	LT,
+	GT,
+	LTE,
+	GTE,
+
+	BIT_AND,
+	BIT_OR,
+	BIT_XOR,
+	BIT_NOT,
+	BIT_LSHIFT,
+	BIT_RSHIFT,
+
+	// not parsed, used by the parser
+	LPAREN,
+	RPAREN,
+	AND,
+	OR,
+	NOT,
+
+	// used in `extern` functions for variadics
+	ELLIPSIS,*/
+
+		auto type = lhs.type;
+
+		// allowed operators are all of the first ones, all of the bit stuff, and
+		// the three `AND`, `OR`, `NOT`
+		// note that for the comparison ones, the return type is changed to a bool
+		// and the bit stuff is only allowed for integers
+		bool isInteger = lhs.type == ctx.get(MirPath{"i32"}, 0);
+		bool isFloat = lhs.type == ctx.get(MirPath{"f64"}, 0);
+		bool isBool = lhs.type == ctx.get(MirPath{"bool"}, 0);
+
+		auto error = [&]() {
+			return Error(
+					fmt::format("unsupported operation `{}` between types `{}` and `{}`",
+											TokenOp::str(hir->op.variant), ctx.get(lhs.type).str(ctx),
+											ctx.get(rhs.type).str(ctx)),
+					{{hir->lhs.span(), "incorrect type here"},
+					 {hir->rhs.span(), "incorrect type here"}});
+		};
+
+		switch (hir->op.variant) {
+		case Op::ADD:
+		case Op::SUB:
+		case Op::MUL:
+		case Op::DIV:
+		case Op::MOD:
+			if (isInteger || isFloat) {
+				break;
+			}
+
+			throw error();
+		case Op::EQEQ:
+		case Op::NEQ:
+		case Op::LT:
+		case Op::GT:
+		case Op::LTE:
+		case Op::GTE:
+			if (isInteger || isFloat || isBool) {
+				type = ctx.get(MirPath{"bool"}, 0);
+				break;
+			}
+
+			throw error;
+		case Op::BIT_AND:
+		case Op::BIT_OR:
+		case Op::BIT_XOR:
+		case Op::BIT_NOT:
+		case Op::BIT_LSHIFT:
+		case Op::BIT_RSHIFT:
+			if (isInteger) {
+				break;
+			}
+
+			throw error();
+		case Op::AND:
+		case Op::OR:
+			if (isBool) {
+				break;
+			}
+
+			throw error();
+		default:
+			throw error();
+		}
+
+		return MirExpr{std::make_shared<MirBinOp>(lhs, rhs, hir->op), type};
 	}
 
 	static MirExpr from_hir(TypeCtx &ctx, std::shared_ptr<HirUnOp> hir) {
 		auto expr = MirExpr::from_hir(ctx, hir->expr);
 		auto type = expr.type;
 
+		// check if the op is legal with the given type
+		// allowed: !bool, -i32, -f64, ref T. deref is handled in a different
+		// place
+		//
+		// bit stuff can only be applied to integers (only check i32)
+		// TODO: check other types. will need to make it possible to use other
+		// types as literals
 		if (hir->op.variant == Op::BIT_AND /* ref */) {
 			auto lit = ctx.getTypeLit(expr.type);
 			lit.refCount++;
 			type = ctx.get(lit);
-		} else if (hir->op.variant == Op::MUL /* deref */) {
-			auto inner = ctx.get(expr.type);
-			auto ptr = std::get_if<MirPointer>(&inner.kind);
-
-			if (!ptr) {
-				throw Error(fmt::format("cannot dereference non-pointer type `{}`",
-																inner.str(ctx)),
-										{{expr.span(), fmt::format("expected `*_`, found `{}`",
-																							 inner.str(ctx))}});
+		} else if (hir->op.variant == Op::NOT) {
+			if (type != ctx.get(MirPath{"bool"}, 0)) {
+				throw Error(fmt::format("cannot apply operator `not` to type `{}`",
+																ctx.get(type).str(ctx)),
+										{{hir->expr.span(), fmt::format("expected bool, found `{}`",
+																										ctx.get(type).str(ctx))}});
 			}
-
-			auto lit = ctx.getTypeLit(expr.type);
-
-			lit.refCount--;
-
-			if (lit.refCount == 0) {
-				type = ptr->type;
-			} else {
-				type = ctx.get(lit);
+		} else if (hir->op.variant == Op::SUB) {
+			if (type != ctx.get(MirPath{"i32"}, 0) &&
+					type != ctx.get(MirPath{"f64"}, 0)) {
+				throw Error(fmt::format("cannot apply operator `neg` to type `{}`",
+																ctx.get(type).str(ctx)),
+										{{hir->expr.span(),
+											fmt::format("expected integer or float, found `{}`",
+																	ctx.get(type).str(ctx))}});
 			}
+		} else if (hir->op.variant == Op::BIT_NOT) {
+			if (type != ctx.get(MirPath{"i32"}, 0)) {
+				throw Error(fmt::format("cannot apply operator `~` to type `{}`",
+																ctx.get(type).str(ctx)),
+										{{hir->expr.span(), fmt::format("expected i32, found `{}`",
+																										ctx.get(type).str(ctx))}});
+			}
+		} else {
+			throw Error(fmt::format("cannot apply operator `{}` to type `{}`",
+															TokenOp::str(hir->op.variant),
+															ctx.get(type).str(ctx)),
+									{{hir->expr.span(), "incorrect type here"}});
 		}
 
 		return MirExpr{std::make_shared<MirUnOp>(expr, hir->op), type};
@@ -1293,8 +1393,6 @@ public:
 					[&ctx](auto &&hir) { return MirBlock::lower(ctx, hir); }, hir.stmt));
 		}
 
-		// delete all statements that come after a diverging statement
-
 		ctx.scope = old;
 
 		return MirBlock{items};
@@ -1380,14 +1478,10 @@ public:
 				HirType{Span{}, HirPath{Span{}, {TokenIdent{Span{}, "void"}}}, 0};
 		auto ret = ctx.get(MirTypeLit::from_hir(ctx, hir.ret.value_or(fallback)));
 
-		auto old = ctx.switchScope(ctx.scope, ret);
-
 		std::vector<MirFnParam> params;
 
 		for (auto &param : hir.params) {
 			auto p = MirFnParam::from_hir(ctx, param);
-
-			ctx.scope->add(p.ident, p.type);
 			params.push_back(p);
 		}
 
@@ -1398,8 +1492,7 @@ public:
 											MirType{std::make_shared<MirFnSignature>(sig)});
 
 		sig.type = ty;
-		old->add(ident, ty);
-		ctx.scope = old;
+		ctx.scope->add(ident, ty);
 
 		return sig;
 	}
@@ -1418,20 +1511,22 @@ public:
 	static MirFn from_hir(TypeCtx &ctx, HirFn hir) {
 		auto sig = MirFnSignature::from_hir(ctx, hir);
 		auto old = ctx.switchScope(ctx.scope, sig.ret);
+
+		for (auto &param : sig.params) {
+			ctx.scope->add(param.ident, param.type);
+		}
+
 		auto block = MirBlock::from_hir(ctx, hir.block);
 
 		// ensure last statement is a return
-		if (block.items.empty()) {
-			throw Error("function body must end with a return statement",
-									{{hir.ident.span(), "function body is empty"}});
-		}
-
-		auto last = block.items.back();
-
-		if (!std::holds_alternative<MirReturn>(last)) {
-			throw Error(
-					"function body must end with a return statement",
-					{{hir.ident.span(), "expected return statement in this function"}});
+		if (block.items.empty() ||
+				!std::holds_alternative<MirReturn>(block.items.back())) {
+			if (sig.ret != ctx.get(MirPath{"void"}, 0)) {
+				throw Error("non-void function body must end with a return statement",
+										{{hir.ident.span(), "function defined here"}});
+			} else {
+				block.items.push_back(MirReturn{std::nullopt});
+			}
 		}
 
 		ctx.scope = old;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <unordered_map>
 
 #include <llvm/Analysis/CGSCCPassManager.h>
@@ -23,8 +24,8 @@
 #include <llvm/Transforms/Scalar/Reassociate.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
 
-#include "mir.h"
-#include "token.h"
+#include "mir.hpp"
+#include "token.hpp"
 
 class LlScope {
 public:
@@ -391,6 +392,11 @@ private:
 		std::shared_ptr<LlScope> entryScope =
 				std::make_shared<LlScope>(builder, scope, fn);
 
+		entryScope->continueBlock = nullptr;
+		entryScope->breakBlock = nullptr;
+
+		builder.SetInsertPoint(entry);
+
 		for (std::size_t i = 0; i < mir.params.size(); i++) {
 			llvm::Argument *arg = fn->arg_begin() + i;
 			arg->setName(mir.params[i].ident.value());
@@ -399,10 +405,8 @@ private:
 
 		scope->setFn(MirPath{mir.ident}, fn);
 
-		builder.SetInsertPoint(entry);
-
 		for (const MirBlockItem &node : mir.block.items) {
-			std::visit([&](auto &&arg) { lower(entryScope, arg); }, node);
+			lower(entryScope, node);
 		}
 	}
 
@@ -677,9 +681,7 @@ private:
 	}
 
 	llvm::Value *lowerUnOp(const MirTypeKind &type, Op op, llvm::Value *value) {
-		// check for pointer
 		if (op == Op::BIT_AND /* ref */) {
-			// TODO: array
 			llvm::Value *out = builder.CreateAlloca(value->getType());
 			builder.CreateStore(value, out);
 
@@ -784,8 +786,9 @@ private:
 
 	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
 														const MirAssignableRootItem &mir) {
-		/* using MirAssignableRootItem =
-		std::variant<MirIdent, std::shared_ptr<MirAssignable>>; */
+		if (auto it = std::get_if<std::shared_ptr<MirPointerDeref>>(&mir); it) {
+			return lowerToAlloc(scope, *it);
+		}
 
 		if (auto it = std::get_if<MirIdent>(&mir); it) {
 			return scope->getAlloca(*it);
@@ -800,10 +803,7 @@ private:
 
 	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,
 														std::shared_ptr<MirPointerDeref> mir) {
-		llvm::Value *value = lowerToAlloc(scope, mir->expr);
-		llvm::Type *ty = ctx.get(mir->type);
-
-		return builder.CreateLoad(ty, value);
+		return lower(scope, mir->expr);
 	}
 
 	llvm::Value *lowerToAlloc(std::shared_ptr<LlScope> &scope,

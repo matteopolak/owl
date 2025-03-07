@@ -1,17 +1,24 @@
 extern fn printf(fmt: *char, ...): i32;
 
-struct Stuff {
-	value: i32
+struct Item {
+	price: *f64
+}
+
+struct Data {
+  item: Item
+}
+
+fn process(data: Data) {
+  *data.item.price = 20.0;
 }
 
 fn main(): i32 {
-  let arr = [
-    Stuff { value: 1 },
-    Stuff { value: 6 }
-  ];
+  let data = Data { item: Item { price: &0.0 } };
 
-  arr[0].value = 8;
+  process(data);
 
-  return arr[1].value;
+  printf("value: %f\n\n", *data.item.price);
+
+  return 0;
 }
 

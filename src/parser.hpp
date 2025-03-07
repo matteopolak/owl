@@ -7,7 +7,7 @@
 
 #include <fmt/core.h>
 
-#include "hir.h"
+#include "hir.hpp"
 
 class Parser : public BasicParser {
 public:
