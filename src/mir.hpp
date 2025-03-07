@@ -809,43 +809,8 @@ public:
 					TokenOp::str(hir->op.variant), expected.str(ctx), given.str(ctx)));
 		}
 
-		// validate operators.
-		/*	ADD,
-	SUB,
-	MUL,
-	DIV,
-	MOD,
-	EQEQ,
-	EQ,
-	NEQ,
-	LT,
-	GT,
-	LTE,
-	GTE,
-
-	BIT_AND,
-	BIT_OR,
-	BIT_XOR,
-	BIT_NOT,
-	BIT_LSHIFT,
-	BIT_RSHIFT,
-
-	// not parsed, used by the parser
-	LPAREN,
-	RPAREN,
-	AND,
-	OR,
-	NOT,
-
-	// used in `extern` functions for variadics
-	ELLIPSIS,*/
-
 		auto type = lhs.type;
 
-		// allowed operators are all of the first ones, all of the bit stuff, and
-		// the three `AND`, `OR`, `NOT`
-		// note that for the comparison ones, the return type is changed to a bool
-		// and the bit stuff is only allowed for integers
 		bool isInteger = lhs.type == ctx.get(MirPath{"i32"}, 0);
 		bool isFloat = lhs.type == ctx.get(MirPath{"f64"}, 0);
 		bool isBool = lhs.type == ctx.get(MirPath{"bool"}, 0);
@@ -911,11 +876,6 @@ public:
 		auto expr = MirExpr::from_hir(ctx, hir->expr);
 		auto type = expr.type;
 
-		// check if the op is legal with the given type
-		// allowed: !bool, -i32, -f64, ref T. deref is handled in a different
-		// place
-		//
-		// bit stuff can only be applied to integers (only check i32)
 		// TODO: check other types. will need to make it possible to use other
 		// types as literals
 		if (hir->op.variant == Op::BIT_AND /* ref */) {
@@ -1573,10 +1533,12 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 			auto given = ctx.get(arg.type);
 
 			throw Error(
-					fmt::format("mismatched types for argument in call to function `{}`",
-											fn->params[i].ident.value(), path),
+					fmt::format(
+							"mismatched types for argument `{}` in call to function `{}`",
+							fn->params[i].ident.value(), path),
 					{{arg.span(), fmt::format("expected `{}`, found `{}`",
-																		expected.str(ctx), given.str(ctx))}});
+																		expected.str(ctx), given.str(ctx))},
+					 {fn->params[i].ident.span, "argument defined here"}});
 		}
 
 		args.push_back(arg);
