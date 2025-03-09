@@ -158,7 +158,9 @@ private:
 			}
 		}
 
-		t.consume("\"");
+		if (!t.tryConsume("\"")) {
+			throw Error("expected closing quote", {{t.endSpan(), "expected here"}});
+		}
 
 		return TokenLit(t.endSpan(), value);
 	}

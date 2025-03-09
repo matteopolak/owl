@@ -11,5 +11,7 @@ cc_binary(
 		"@llvm-project//llvm:Target",
 		"@llvm-project//llvm:CodeGen",
 		"@llvm-project//llvm:MC",
+
+		"@llvm-project//llvm:AllTargetsAsmParsers",
 	]
 )

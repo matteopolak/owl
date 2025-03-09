@@ -21,39 +21,30 @@ public:
 		std::vector<Token> tokens;
 
 		for (;;) {
-			try {
-				auto token = next();
+			auto token = next();
 
-				if (std::holds_alternative<TokenDelim>(token) &&
-						std::get<TokenDelim>(token).variant == Delim::COLON) {
-					auto t = std::get<TokenDelim>(token);
-					auto nextToken = next();
+			if (std::holds_alternative<TokenDelim>(token) &&
+					std::get<TokenDelim>(token).variant == Delim::COLON) {
+				auto t = std::get<TokenDelim>(token);
+				auto nextToken = next();
 
-					if (std::holds_alternative<TokenDelim>(nextToken) &&
-							std::get<TokenDelim>(nextToken).variant == Delim::COLON) {
-						auto nextT = std::get<TokenDelim>(nextToken);
-						tokens.push_back(
-								TokenDelim(t.span().merge(nextT.span()), Delim::COLON_COLON));
-						continue;
-					} else {
-						tokens.push_back(token);
-						tokens.push_back(nextToken);
-						continue;
-					}
+				if (std::holds_alternative<TokenDelim>(nextToken) &&
+						std::get<TokenDelim>(nextToken).variant == Delim::COLON) {
+					auto nextT = std::get<TokenDelim>(nextToken);
+					tokens.push_back(
+							TokenDelim(t.span().merge(nextT.span()), Delim::COLON_COLON));
+					continue;
+				} else {
+					tokens.push_back(token);
+					tokens.push_back(nextToken);
+					continue;
 				}
+			}
 
-				tokens.push_back(token);
+			tokens.push_back(token);
 
-				if (std::holds_alternative<TokenEof>(token)) {
-					break;
-				}
-			} catch (std::runtime_error &e) {
-				auto span = endSpan();
-
-				fmt::print("error at {}:{} {}\n", span.start.line, span.end.line,
-									 e.what());
-
-				throw e;
+			if (std::holds_alternative<TokenEof>(token)) {
+				break;
 			}
 		}
 

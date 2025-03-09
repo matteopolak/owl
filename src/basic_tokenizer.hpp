@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "error.hpp"
 #include "span.hpp"
 
 class BasicTokenizer {
@@ -30,7 +31,8 @@ public:
 
 	void consume(std::string prefix) {
 		if (!tryConsume(prefix)) {
-			throw std::runtime_error("expected " + prefix);
+			throw Error(fmt::format("expected '{}'", prefix),
+									{{endSpan(), "expected here"}});
 		}
 	}
 

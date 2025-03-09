@@ -238,6 +238,9 @@ public:
 			return;
 		}
 
+		llvm::InitializeNativeTarget();
+		llvm::InitializeNativeTargetAsmPrinter();
+
 		std::string targetTriple = llvm::sys::getDefaultTargetTriple();
 		module.setTargetTriple(targetTriple);
 

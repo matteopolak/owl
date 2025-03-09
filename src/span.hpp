@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <string_view>
 
-struct Span;
+#include <fmt/core.h>
+
+class Span;
 
 class Position {
 public:
