@@ -1,3 +1,12 @@
 common --enable_bzlmod
 
-build --action_env=BAZEL_CXXOPTS="-std=c++20"
+build --cxxopt=/std:c++20
+build --cxxopt=/utf-8
+build --host_cxxopt=/std:c++20
+build --host_cxxopt=/utf-8
+
+build:linux --cxxopt=-std=c++20
+build:linux --host_cxxopt=-std=c++20
+
+build:macos --cxxopt=-std=c++20
+build:macos --host_cxxopt=-std=c++20

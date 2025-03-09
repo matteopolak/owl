@@ -1246,7 +1246,7 @@ public:
 	HirExpr expr;
 
 	static HirConst parse(BasicParser &t) {
-		auto const_ = t.tryConsume<TokenKeyword>(Keyword::CONST);
+		auto const_ = t.tryConsume<TokenKeyword>(Keyword::CONST_);
 
 		if (!const_) {
 			throw std::runtime_error("expected const");

@@ -1271,17 +1271,24 @@ public:
 
 		if (hir.expr) {
 			expr = MirExpr::from_hir(ctx, *hir.expr);
+		}
 
-			if (auto ret = ctx.scope->fnReturnType) {
-				if (expr->type != *ret) {
-					auto lhs = ctx.get(*ret);
-					auto rhs = ctx.get(expr->type);
+		if (auto ret = ctx.scope->fnReturnType) {
+			auto lhs = ctx.get(*ret);
+			auto vd = ctx.get(MirPath{"void"}, 0);
 
-					throw Error(
-							fmt::format("type mismatch for return. expected `{}`, found `{}`",
-													lhs.str(ctx), rhs.str(ctx)),
-							{{hir.expr->span(), "incorrect value here"}});
-				}
+			if (expr && expr->type != *ret) {
+				auto rhs = ctx.get(expr->type);
+
+				throw Error(
+						fmt::format("type mismatch for return. expected `{}`, found `{}`",
+												lhs.str(ctx), rhs.str(ctx)),
+						{{expr->span(), "incorrect value here"}});
+			} else if (!expr && *ret != vd) {
+				throw Error(
+						fmt::format("type mismatch for return. expected `{}`, found `void`",
+												lhs.str(ctx)),
+						{{hir.ret.span(), "incorrect value returned here"}});
 			}
 		}
 
@@ -1793,18 +1800,14 @@ public:
 	Mir lower(Hir hir) {
 		return std::visit([this](auto &&hir) { return lower(hir); }, hir);
 	}
+
+	Mir lower(BaseHir hir) {
+		throw Error("not allowed at the top level",
+								{{hir.span(), "not allowed here"}});
+	}
+
 	Mir lower(HirFn hir) { return MirFn::from_hir(ctx, hir); }
 	Mir lower(HirStruct hir) { return MirStruct::from_hir(ctx, hir); }
-	Mir lower(HirExpr hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirLoop hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirIf hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirFor hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirWhile hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirConst hir) { throw std::runtime_error("not implemented"); }
-	Mir lower(HirAssign hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirReassign hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirReturn hir) { throw std::runtime_error("not allowed here"); }
-	Mir lower(HirImport hir) { throw std::runtime_error("not implemented"); }
 	Mir lower(HirExtern hir) { return MirFnSignature::from_hir(ctx, hir); }
 
 private:

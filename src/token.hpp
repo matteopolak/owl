@@ -158,7 +158,9 @@ private:
 			}
 		}
 
-		t.consume("\"");
+		if (!t.tryConsume("\"")) {
+			throw Error("expected closing quote", {{t.endSpan(), "expected here"}});
+		}
 
 		return TokenLit(t.endSpan(), value);
 	}
@@ -523,11 +525,11 @@ enum class Keyword {
 	IMPORT,
 	EXPORT,
 	EXTERN,
-	CONST,
+	CONST_,
 	SUPER,
-	AND,
-	OR,
-	NOT
+	AND_,
+	OR_,
+	NOT_
 };
 
 class TokenKeyword : public BaseToken {
@@ -570,7 +572,7 @@ public:
 		} else if (v == "extern") {
 			keyword = Keyword::EXTERN;
 		} else if (v == "const") {
-			keyword = Keyword::CONST;
+			keyword = Keyword::CONST_;
 		} else if (v == "break") {
 			keyword = Keyword::BREAK;
 		} else if (v == "continue") {
@@ -580,11 +582,11 @@ public:
 		} else if (v == "super") {
 			keyword = Keyword::SUPER;
 		} else if (v == "and") {
-			keyword = Keyword::AND;
+			keyword = Keyword::AND_;
 		} else if (v == "or") {
-			keyword = Keyword::OR;
+			keyword = Keyword::OR_;
 		} else if (v == "not") {
-			keyword = Keyword::NOT;
+			keyword = Keyword::NOT_;
 		} else {
 			return std::nullopt;
 		}
@@ -626,15 +628,15 @@ public:
 			return "export";
 		case Keyword::EXTERN:
 			return "extern";
-		case Keyword::CONST:
+		case Keyword::CONST_:
 			return "const";
 		case Keyword::SUPER:
 			return "super";
-		case Keyword::AND:
+		case Keyword::AND_:
 			return "and";
-		case Keyword::OR:
+		case Keyword::OR_:
 			return "or";
-		case Keyword::NOT:
+		case Keyword::NOT_:
 			return "not";
 		default:
 			throw std::runtime_error("keyword str not implemented");

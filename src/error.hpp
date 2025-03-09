@@ -24,7 +24,6 @@ public:
 	std::string format(const std::string_view &source) const {
 		static std::size_t LINE_COUNT = 7;
 
-		// TODO: move this or fix my terminal
 		rang::setControlMode(rang::control::Force);
 
 		std::ostringstream output;

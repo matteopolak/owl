@@ -238,6 +238,9 @@ public:
 			return;
 		}
 
+		llvm::InitializeNativeTarget();
+		llvm::InitializeNativeTargetAsmPrinter();
+
 		std::string targetTriple = llvm::sys::getDefaultTargetTriple();
 		module.setTargetTriple(targetTriple);
 
@@ -321,12 +324,17 @@ public:
 		std::vector<std::string> args;
 
 		if (llvm::Triple(llvm::sys::getProcessTriple()).isOSWindows()) {
-			linker = "link.exe";
+			auto foundLinker = llvm::sys::findProgramByName("link");
+			if (!foundLinker) {
+				throw std::runtime_error("link.exe not found");
+			}
+			linker = *foundLinker;
+
 			args = {linker,
-							"/entry:_start",
 							"/subsystem:console",
 							"msvcrt.lib",
-							"/out:" + output.string() = ".exe",
+							"kernel32.lib",
+							"/out:" + output.string() + ".exe",
 							objectFile.string()};
 		} else if (llvm::Triple(llvm::sys::getProcessTriple()).isMacOSX()) {
 			linker = "ld";
