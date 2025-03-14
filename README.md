@@ -62,8 +62,17 @@ First, [install Bazel](https://bazel.build/install).
 
 ```sh
 bazel build owl
+# if using gcc-11 it may fail. try using clang:
+CC=clang CXX=clang++ bazel build owl
 # run it
 ./bazel-bin/owl --help
+```
+
+## Development
+
+```sh
+# generate compile_commands.json
+bazel run :refresh_compile_commands
 ```
 
 ## Errors

@@ -68,6 +68,30 @@ private:
 	}
 };
 
+class HirGenerics : public BaseHir {
+public:
+	HirGenerics(Span span, std::vector<TokenIdent> generics)
+			: BaseHir(span), generics(std::move(generics)) {}
+
+	std::vector<TokenIdent> generics;
+
+	static HirGenerics empty() { return HirGenerics{Span{}, {}}; }
+
+	static HirGenerics parse(BasicParser &t) {
+		auto langle = t.consume<TokenDelim>(Delim::LANGLE);
+		std::vector<TokenIdent> generics;
+
+		do {
+			auto ident = t.consume<TokenIdent>();
+			generics.push_back(std::move(ident));
+		} while (t.tryConsume<TokenDelim>(Delim::COMMA));
+
+		auto rangle = t.consume<TokenDelim>(Delim::RANGLE);
+
+		return HirGenerics{langle.span().merge(rangle.span()), std::move(generics)};
+	}
+};
+
 class HirArrayIndex : public BaseHir {
 public:
 	HirArrayIndex(Span span, HirExpr expr)
@@ -217,12 +241,14 @@ public:
 
 class HirPath : public BaseHir {
 public:
-	HirPath(Span span, std::vector<TokenIdent> parts)
-			: BaseHir(span), parts(std::move(parts)) {}
+	HirPath(Span span, std::vector<TokenIdent> parts,
+					std::optional<HirGenerics> generics)
+			: BaseHir(span), parts(std::move(parts)), generics(std::move(generics)) {}
 
 	std::vector<TokenIdent> parts;
+	std::optional<HirGenerics> generics;
 
-	static HirPath empty() { return HirPath{Span{}, {}}; }
+	static HirPath empty() { return HirPath{Span{}, {}, std::nullopt}; }
 
 	static HirPath parse(BasicParser &t) {
 		std::vector<TokenIdent> parts;
@@ -238,7 +264,14 @@ public:
 
 		Span span = parts.front().span().merge(parts.back().span());
 
-		return HirPath{span, std::move(parts)};
+		std::optional<HirGenerics> generics;
+
+		if (t.peek<TokenDelim>(Delim::LANGLE)) {
+			generics = HirGenerics::parse(t);
+			span = span.merge(generics->span());
+		}
+
+		return HirPath{span, std::move(parts), generics};
 	}
 
 	// == with a HirPath only compares the parts (not the span)
@@ -271,14 +304,14 @@ public:
 			}
 		}
 
-		return HirPath{span(), std::move(newParts)};
+		return HirPath{span(), std::move(newParts), other.generics};
 	}
 
 	HirPath join(const TokenIdent &ident) const {
 		std::vector<TokenIdent> newParts = parts;
 		newParts.push_back(ident);
 
-		return HirPath{span(), std::move(newParts)};
+		return HirPath{span(), std::move(newParts), std::nullopt};
 	}
 
 	std::filesystem::path toPath(std::filesystem::path root) const {
@@ -549,17 +582,25 @@ public:
 class HirFnCall : public BaseHir {
 public:
 	HirFnCall(Span span, HirPath path, TokenDelim lparen,
-						std::vector<HirExpr> args, TokenDelim rparen)
+						std::vector<HirExpr> args, TokenDelim rparen,
+						std::optional<HirGenerics> generics)
 			: BaseHir(span), path(std::move(path)), lparen(lparen),
-				args(std::move(args)), rparen(rparen) {}
+				args(std::move(args)), rparen(rparen), generics(generics) {}
 
 	HirPath path;
 	TokenDelim lparen;
 	std::vector<HirExpr> args;
 	TokenDelim rparen;
+	std::optional<HirGenerics> generics;
 
 	static HirFnCall parse(BasicParser &t) {
 		auto path = HirPath::parse(t);
+
+		std::optional<HirGenerics> generics;
+
+		if (t.peek<TokenDelim>(Delim::LANGLE)) {
+			generics = HirGenerics::parse(t);
+		}
 
 		auto lparen = t.tryConsume<TokenDelim>(Delim::LPAREN);
 
@@ -586,8 +627,12 @@ public:
 		t.tryConsume<TokenDelim>(Delim::COMMA);
 		rparen = t.consume<TokenDelim>(Delim::RPAREN);
 
-		return HirFnCall{path.span().merge(rparen->span()), path, *lparen,
-										 std::move(args), *rparen};
+		return HirFnCall{path.span().merge(rparen->span()),
+										 path,
+										 *lparen,
+										 std::move(args),
+										 *rparen,
+										 generics};
 	}
 
 	static std::optional<HirFnCall> tryParse(BasicParser &t) {
@@ -681,9 +726,9 @@ class HirFn : public BaseHir {
 public:
 	HirFn(Span span, TokenKeyword fn, TokenIdent ident,
 				std::vector<HirTypedIdent> params, HirBlock block,
-				std::optional<HirType> ret)
+				std::optional<HirType> ret, std::optional<HirGenerics> generics)
 			: BaseHir(span), fn(fn), ident(ident), params(std::move(params)),
-				block(std::move(block)), ret(ret) {}
+				block(std::move(block)), ret(ret), generics(generics) {}
 
 	bool export_ = false;
 	TokenKeyword fn;
@@ -692,6 +737,7 @@ public:
 
 	HirBlock block;
 	std::optional<HirType> ret;
+	std::optional<HirGenerics> generics;
 
 	static HirFn parse(BasicParser &t) {
 		auto fn = t.tryConsume<TokenKeyword>(Keyword::FN);
@@ -701,6 +747,12 @@ public:
 		}
 
 		auto ident = t.consume<TokenIdent>();
+
+		std::optional<HirGenerics> generics;
+
+		if (t.peek<TokenDelim>(Delim::LANGLE)) {
+			generics = HirGenerics::parse(t);
+		}
 
 		t.consume<TokenDelim>(Delim::LPAREN);
 		auto rparen = t.peek<TokenDelim>(Delim::RPAREN);
@@ -731,8 +783,13 @@ public:
 
 		auto block = HirBlock::parse(t);
 
-		return HirFn{
-				fn->span().merge(block.span()), *fn, ident, params, block, ret};
+		return HirFn{fn->span().merge(block.span()),
+								 *fn,
+								 ident,
+								 params,
+								 block,
+								 ret,
+								 generics};
 	}
 };
 
@@ -879,14 +936,16 @@ public:
 class HirStruct : public BaseHir {
 public:
 	HirStruct(Span span, TokenKeyword struct_, TokenIdent ident,
-						std::vector<HirTypedIdent> fields)
+						std::vector<HirTypedIdent> fields,
+						std::optional<HirGenerics> generics)
 			: BaseHir(span), struct_(struct_), ident(ident),
-				fields(std::move(fields)) {}
+				fields(std::move(fields)), generics(generics) {}
 
 	bool export_ = false;
 	TokenKeyword struct_;
 	TokenIdent ident;
 	std::vector<HirTypedIdent> fields;
+	std::optional<HirGenerics> generics;
 
 	static HirStruct parse(BasicParser &t) {
 		auto struct_ = t.tryConsume<TokenKeyword>(Keyword::STRUCT);
@@ -896,6 +955,12 @@ public:
 		}
 
 		auto ident = t.consume<TokenIdent>();
+
+		std::optional<HirGenerics> generics;
+
+		if (t.peek<TokenDelim>(Delim::LANGLE)) {
+			generics = HirGenerics::parse(t);
+		}
 
 		t.consume<TokenDelim>(Delim::LBRACE);
 		auto rbrace = t.peek<TokenDelim>(Delim::RBRACE);
@@ -919,7 +984,7 @@ public:
 		rbrace = t.consume<TokenDelim>(Delim::RBRACE);
 
 		return HirStruct{struct_->span().merge(rbrace->span()), *struct_, ident,
-										 fields};
+										 fields, generics};
 	}
 };
 
