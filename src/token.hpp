@@ -520,12 +520,12 @@ enum class Keyword {
 	CONTINUE,
 	RETURN,
 	STRUCT,
-	INTERFACE,
+	INTERFACE_,
 	IMPLEMENT,
 	IMPORT,
 	EXPORT,
 	EXTERN,
-	CONST,
+	CONST_,
 	SUPER,
 	AND,
 	OR,
@@ -562,7 +562,7 @@ public:
 		} else if (v == "struct") {
 			keyword = Keyword::STRUCT;
 		} else if (v == "interface") {
-			keyword = Keyword::INTERFACE;
+			keyword = Keyword::INTERFACE_;
 		} else if (v == "implement") {
 			keyword = Keyword::IMPLEMENT;
 		} else if (v == "import") {
@@ -572,7 +572,7 @@ public:
 		} else if (v == "extern") {
 			keyword = Keyword::EXTERN;
 		} else if (v == "const") {
-			keyword = Keyword::CONST;
+			keyword = Keyword::CONST_;
 		} else if (v == "break") {
 			keyword = Keyword::BREAK;
 		} else if (v == "continue") {
@@ -618,7 +618,7 @@ public:
 			return "return";
 		case Keyword::STRUCT:
 			return "struct";
-		case Keyword::INTERFACE:
+		case Keyword::INTERFACE_:
 			return "interface";
 		case Keyword::IMPLEMENT:
 			return "implement";
@@ -628,7 +628,7 @@ public:
 			return "export";
 		case Keyword::EXTERN:
 			return "extern";
-		case Keyword::CONST:
+		case Keyword::CONST_:
 			return "const";
 		case Keyword::SUPER:
 			return "super";

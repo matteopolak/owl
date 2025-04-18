@@ -68,16 +68,16 @@ private:
 	}
 };
 
-class HirGenerics : public BaseHir {
+class HirGenericsParam : public BaseHir {
 public:
-	HirGenerics(Span span, std::vector<TokenIdent> generics)
+	HirGenericsParam(Span span, std::vector<TokenIdent> generics)
 			: BaseHir(span), generics(std::move(generics)) {}
 
 	std::vector<TokenIdent> generics;
 
-	static HirGenerics empty() { return HirGenerics{Span{}, {}}; }
+	static HirGenericsParam empty() { return HirGenericsParam{Span{}, {}}; }
 
-	static HirGenerics parse(BasicParser &t) {
+	static HirGenericsParam parse(BasicParser &t) {
 		auto langle = t.consume<TokenDelim>(Delim::LANGLE);
 		std::vector<TokenIdent> generics;
 
@@ -88,7 +88,8 @@ public:
 
 		auto rangle = t.consume<TokenDelim>(Delim::RANGLE);
 
-		return HirGenerics{langle.span().merge(rangle.span()), std::move(generics)};
+		return HirGenericsParam{langle.span().merge(rangle.span()),
+														std::move(generics)};
 	}
 };
 
@@ -239,14 +240,59 @@ public:
 	}
 };
 
+class HirArray;
+class HirPath;
+
+using HirTypeItem =
+		std::variant<std::shared_ptr<HirPath>, std::shared_ptr<HirArray>>;
+
+class HirType : public BaseHir {
+public:
+	HirType(Span span, HirTypeItem item, std::size_t refCount)
+			: BaseHir(span), refCount(refCount), item(std::move(item)) {}
+
+	Span span;
+	std::size_t refCount;
+	HirTypeItem item;
+
+	static HirType parse(BasicParser &t);
+
+	static HirType void_();
+};
+
+class HirGenericsInst : public BaseHir {
+public:
+	std::vector<HirType> types;
+
+	HirGenericsInst(Span span, std::vector<HirType> types)
+			: BaseHir(span), types(std::move(types)) {}
+
+	static HirGenericsInst parse(BasicParser &t) {
+		auto langle = t.consume<TokenDelim>(Delim::LANGLE);
+		std::vector<HirType> types;
+
+		do {
+			auto ty = HirType::parse(t);
+			types.push_back(std::move(ty));
+		} while (t.tryConsume<TokenDelim>(Delim::COMMA));
+
+		auto rangle = t.consume<TokenDelim>(Delim::RANGLE);
+
+		return HirGenericsInst{langle.span().merge(rangle.span()),
+													 std::move(types)};
+	}
+
+	static HirGenericsInst empty() { return HirGenericsInst{Span{}, {}}; }
+};
+
 class HirPath : public BaseHir {
 public:
 	HirPath(Span span, std::vector<TokenIdent> parts,
-					std::optional<HirGenerics> generics)
+					std::optional<HirGenericsInst> generics)
 			: BaseHir(span), parts(std::move(parts)), generics(std::move(generics)) {}
 
 	std::vector<TokenIdent> parts;
-	std::optional<HirGenerics> generics;
+	std::optional<HirGenericsInst> generics;
 
 	static HirPath empty() { return HirPath{Span{}, {}, std::nullopt}; }
 
@@ -264,10 +310,10 @@ public:
 
 		Span span = parts.front().span().merge(parts.back().span());
 
-		std::optional<HirGenerics> generics;
+		std::optional<HirGenericsInst> generics;
 
 		if (t.peek<TokenDelim>(Delim::LANGLE)) {
-			generics = HirGenerics::parse(t);
+			generics = HirGenericsInst::parse(t);
 			span = span.merge(generics->span());
 		}
 
@@ -329,22 +375,6 @@ public:
 	}
 };
 
-class HirArray;
-
-using HirTypeItem = std::variant<HirPath, std::shared_ptr<HirArray>>;
-
-class HirType : public BaseHir {
-public:
-	HirType(Span span, HirTypeItem item, std::size_t refCount)
-			: BaseHir(span), refCount(refCount), item(std::move(item)) {}
-
-	Span span;
-	std::size_t refCount;
-	HirTypeItem item;
-
-	static HirType parse(BasicParser &t);
-};
-
 class HirArray : public BaseHir {
 public:
 	HirArray(Span span, std::shared_ptr<HirType> type, TokenLit size)
@@ -364,6 +394,11 @@ public:
 	}
 };
 
+HirType HirType::void_() {
+	return HirType{
+			Span{}, HirPath{Span{}, {TokenIdent{Span{}, "void"}}, std::nullopt}, 0};
+}
+
 HirType HirType::parse(BasicParser &t) {
 	std::size_t refCount = 0;
 
@@ -379,7 +414,8 @@ HirType HirType::parse(BasicParser &t) {
 
 	auto item = HirPath::parse(t);
 
-	return HirType{item.span(), std::move(item), refCount};
+	return HirType{item.span(), std::make_shared<HirPath>(std::move(item)),
+								 refCount};
 }
 
 template <> struct std::hash<HirPath> {
@@ -583,7 +619,7 @@ class HirFnCall : public BaseHir {
 public:
 	HirFnCall(Span span, HirPath path, TokenDelim lparen,
 						std::vector<HirExpr> args, TokenDelim rparen,
-						std::optional<HirGenerics> generics)
+						std::optional<HirGenericsInst> generics)
 			: BaseHir(span), path(std::move(path)), lparen(lparen),
 				args(std::move(args)), rparen(rparen), generics(generics) {}
 
@@ -591,15 +627,15 @@ public:
 	TokenDelim lparen;
 	std::vector<HirExpr> args;
 	TokenDelim rparen;
-	std::optional<HirGenerics> generics;
+	std::optional<HirGenericsInst> generics;
 
 	static HirFnCall parse(BasicParser &t) {
 		auto path = HirPath::parse(t);
 
-		std::optional<HirGenerics> generics;
+		std::optional<HirGenericsInst> generics;
 
 		if (t.peek<TokenDelim>(Delim::LANGLE)) {
-			generics = HirGenerics::parse(t);
+			generics = HirGenericsInst::parse(t);
 		}
 
 		auto lparen = t.tryConsume<TokenDelim>(Delim::LPAREN);
@@ -726,7 +762,7 @@ class HirFn : public BaseHir {
 public:
 	HirFn(Span span, TokenKeyword fn, TokenIdent ident,
 				std::vector<HirTypedIdent> params, HirBlock block,
-				std::optional<HirType> ret, std::optional<HirGenerics> generics)
+				std::optional<HirType> ret, std::optional<HirGenericsParam> generics)
 			: BaseHir(span), fn(fn), ident(ident), params(std::move(params)),
 				block(std::move(block)), ret(ret), generics(generics) {}
 
@@ -737,7 +773,7 @@ public:
 
 	HirBlock block;
 	std::optional<HirType> ret;
-	std::optional<HirGenerics> generics;
+	std::optional<HirGenericsParam> generics;
 
 	static HirFn parse(BasicParser &t) {
 		auto fn = t.tryConsume<TokenKeyword>(Keyword::FN);
@@ -748,10 +784,10 @@ public:
 
 		auto ident = t.consume<TokenIdent>();
 
-		std::optional<HirGenerics> generics;
+		std::optional<HirGenericsParam> generics;
 
 		if (t.peek<TokenDelim>(Delim::LANGLE)) {
-			generics = HirGenerics::parse(t);
+			generics = HirGenericsParam::parse(t);
 		}
 
 		t.consume<TokenDelim>(Delim::LPAREN);
@@ -937,7 +973,7 @@ class HirStruct : public BaseHir {
 public:
 	HirStruct(Span span, TokenKeyword struct_, TokenIdent ident,
 						std::vector<HirTypedIdent> fields,
-						std::optional<HirGenerics> generics)
+						std::optional<HirGenericsParam> generics)
 			: BaseHir(span), struct_(struct_), ident(ident),
 				fields(std::move(fields)), generics(generics) {}
 
@@ -945,7 +981,7 @@ public:
 	TokenKeyword struct_;
 	TokenIdent ident;
 	std::vector<HirTypedIdent> fields;
-	std::optional<HirGenerics> generics;
+	std::optional<HirGenericsParam> generics;
 
 	static HirStruct parse(BasicParser &t) {
 		auto struct_ = t.tryConsume<TokenKeyword>(Keyword::STRUCT);
@@ -956,10 +992,10 @@ public:
 
 		auto ident = t.consume<TokenIdent>();
 
-		std::optional<HirGenerics> generics;
+		std::optional<HirGenericsParam> generics;
 
 		if (t.peek<TokenDelim>(Delim::LANGLE)) {
-			generics = HirGenerics::parse(t);
+			generics = HirGenericsParam::parse(t);
 		}
 
 		t.consume<TokenDelim>(Delim::LBRACE);
@@ -1237,12 +1273,15 @@ public:
 
 class HirExtern : public BaseHir {
 public:
-	HirExtern(Span span, TokenIdent ident, std::vector<HirTypedIdent> params,
-						std::optional<HirType> ret, bool variadic)
-			: BaseHir(span), ident(ident), params(std::move(params)), ret(ret),
-				variadic(variadic) {}
+	HirExtern(Span span, TokenIdent ident,
+						std::optional<HirGenericsParam> generics,
+						std::vector<HirTypedIdent> params, std::optional<HirType> ret,
+						bool variadic)
+			: BaseHir(span), ident(ident), generics(generics),
+				params(std::move(params)), ret(ret), variadic(variadic) {}
 
 	TokenIdent ident;
+	std::optional<HirGenericsParam> generics;
 	std::vector<HirTypedIdent> params;
 	std::optional<HirType> ret;
 	bool variadic = false;
@@ -1256,6 +1295,12 @@ public:
 
 		t.consume<TokenKeyword>(Keyword::FN);
 		auto ident = t.consume<TokenIdent>();
+
+		std::optional<HirGenericsParam> generics;
+
+		if (t.peek<TokenDelim>(Delim::LANGLE)) {
+			generics = HirGenericsParam::parse(t);
+		}
 
 		t.consume<TokenDelim>(Delim::LPAREN);
 		auto rparen = t.peek<TokenDelim>(Delim::RPAREN);
@@ -1292,7 +1337,11 @@ public:
 
 		t.consume<TokenDelim>(Delim::SEMICOLON);
 
-		return HirExtern{extern_->span().merge(rparen->span()), ident, params, ret,
+		return HirExtern{extern_->span().merge(rparen->span()),
+										 ident,
+										 generics,
+										 params,
+										 ret,
 										 variadic};
 	}
 };
@@ -1311,7 +1360,7 @@ public:
 	HirExpr expr;
 
 	static HirConst parse(BasicParser &t) {
-		auto const_ = t.tryConsume<TokenKeyword>(Keyword::CONST);
+		auto const_ = t.tryConsume<TokenKeyword>(Keyword::CONST_);
 
 		if (!const_) {
 			throw std::runtime_error("expected const");

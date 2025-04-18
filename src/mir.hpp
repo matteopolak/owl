@@ -79,36 +79,24 @@ template <> struct std::hash<MirIdent> {
 	std::size_t operator()(const MirIdent &ident) const { return ident.hash(); }
 };
 
-class MirGenerics {
+class Scope;
+
+class MirGenericsParam {
 public:
-	MirGenerics(Span span, std::vector<MirIdent> generics)
-			: span(span), generics(std::move(generics)) {}
+	MirGenericsParam(Span span,
+									 std::vector<std::pair<MirIdent, TypeHandle>> params)
+			: span(span), params(std::move(params)) {}
 
 	Span span;
-	std::vector<MirIdent> generics;
+	// the TypeHandles here are "placeholder types" that just represent the
+	// generic type
+	//
+	// they will be replaced with real types afterwards
+	std::vector<std::pair<MirIdent, TypeHandle>> params;
 
-	static MirGenerics from_hir(HirGenerics hir) {
-		std::vector<MirIdent> generics;
-
-		for (auto &ident : hir.generics) {
-			auto id = MirIdent::from_hir(ident);
-
-			for (auto &gen : generics) {
-				if (gen == id) {
-					throw Error(fmt::format("duplicate generic `{}`", id.ident),
-											{{id.span, "duplicate generic"},
-											 {gen.span, "previous declaration here"}});
-				}
-			}
-
-			generics.push_back(id);
-		}
-
-		return MirGenerics{hir.span(), std::move(generics)};
-	}
+	static MirGenericsParam from_hir(std::shared_ptr<Scope> ctx,
+																	 HirGenericsParam hir);
 };
-
-class Scope;
 
 class MirPath {
 public:
@@ -136,7 +124,11 @@ public:
 		return h;
 	}
 
-	static MirPath from_hir(HirPath hir) {
+	static MirPath from_hir(std::shared_ptr<HirPath> hir) {
+		return from_hir(*hir);
+	}
+
+	static MirPath from_hir(HirPath &hir) {
 		MirPath path{MirIdent{hir.parts[0].value()}, hir.span()};
 
 		for (std::size_t i = 1; i < hir.parts.size(); i++) {
@@ -183,7 +175,8 @@ private:
 	static MirTypeLit from_hir(std::shared_ptr<Scope> ctx,
 														 std::shared_ptr<HirArray> hir,
 														 std::size_t refCount);
-	static MirTypeLit from_hir(std::shared_ptr<Scope> ctx, HirPath hir,
+	static MirTypeLit from_hir(std::shared_ptr<Scope> ctx,
+														 std::shared_ptr<HirPath> hir,
 														 std::size_t refCount) {
 		return MirTypeLit{MirPath::from_hir(hir), refCount};
 	}
@@ -231,11 +224,13 @@ public:
 
 class MirStruct {
 public:
-	MirStruct(TypeHandle type, MirIdent ident, std::vector<MirStructField> fields)
-			: type(type), ident(ident), fields(fields) {}
+	MirStruct(TypeHandle type, MirIdent ident, MirGenericsParam generics,
+						std::vector<MirStructField> fields)
+			: type(type), ident(ident), generics(generics), fields(fields) {}
 
 	TypeHandle type;
 	MirIdent ident;
+	MirGenericsParam generics;
 	std::vector<MirStructField> fields;
 
 	static MirStruct from_hir(std::shared_ptr<Scope> ctx, HirStruct hir);
@@ -488,6 +483,9 @@ public:
 			: generics(std::move(generics)) {}
 
 	std::vector<TypeHandle> generics;
+
+	static MirGenericsInstance from_hir(std::shared_ptr<Scope> ctx,
+																			HirGenericsInst hir);
 };
 
 // hash
@@ -568,6 +566,14 @@ public:
 		return type;
 	}
 
+	TypeHandle addGenericType(MirIdent ident) {
+		auto handle = TypeHandle{nextIndex++};
+
+		variables.emplace(ident, handle);
+
+		return handle;
+	}
+
 	TypeHandle addType(MirPath path, std::size_t refCount, MirType type) {
 		return addType(MirTypeLit{path, refCount}, type);
 	}
@@ -587,19 +593,41 @@ public:
 		return handle;
 	}
 
-	TypeHandle getGenericType(TypeHandle type, MirGenericsInstance generics) {
-		std::pair<TypeHandle, MirGenericsInstance> key{type, generics};
+	TypeHandle addType(MirTypeLit path, TypeHandle handle) {
+		if (auto it = types.find(path); it != types.end()) {
+			return it->second;
+		}
+
+		types.emplace(path, handle);
+		inverseTypes.emplace(handle, path);
+
+		return handle;
+	}
+
+	TypeHandle getGenericType(TypeHandle type, MirGenericsInstance params) {
+		std::pair<TypeHandle, MirGenericsInstance> key{type, params};
 
 		if (auto it = generics.find(key); it != generics.end()) {
 			return it->second;
 		}
 
-		auto path = getTypeLit(type);
-		auto ty = getType(path, 0);
+		MirType ty = getType(type);
 
-		auto handle = addType(path, generics, ty);
+		// set the generic params (also check them for validity here)
+		if (auto struct_ = std::get_if<MirStruct>(&ty.kind)) {
+			if (struct_->generics.generics.size() != params.generics.size()) {
+				throw Error(
+						fmt::format("invalid number of generics for `{}`",
+												struct_->ident.ident),
+						{{struct_->ident.span,
+							fmt::format("expected {} generics", params.generics.size())}});
+			}
+		}
 
-		return handle;
+		// TODO: typecheck it if it's a function
+		generics.emplace(key, ty);
+
+		return type;
 	}
 
 	TypeHandle getType(MirTypeLit lit) {
@@ -670,6 +698,43 @@ private:
 };
 
 std::size_t Scope::nextIndex = 0;
+
+MirGenericsParam MirGenericsParam::from_hir(std::shared_ptr<Scope> ctx,
+																						HirGenericsParam hir) {
+	std::vector<std::pair<MirIdent, TypeHandle>> params;
+	std::vector<MirIdent> ids;
+
+	for (auto &ident : hir.generics) {
+		auto id = MirIdent::from_hir(ident);
+
+		for (auto &gen : ids) {
+			if (gen == id) {
+				throw Error(fmt::format("duplicate generic `{}`", id.ident),
+										{{id.span, "duplicate generic"},
+										 {gen.span, "previous declaration here"}});
+			}
+		}
+
+		ids.push_back(id);
+		params.emplace_back(id, ctx->addGenericType(id));
+	}
+
+	return MirGenericsParam{hir.span(), std::move(params)};
+}
+
+MirGenericsInstance MirGenericsInstance::from_hir(std::shared_ptr<Scope> ctx,
+																									HirGenericsInst hir) {
+	std::vector<TypeHandle> generics;
+
+	for (auto &gen : hir.types) {
+		auto type = MirTypeLit::from_hir(ctx, gen);
+		auto handle = ctx->getType(type);
+
+		generics.push_back(ctx->addType(type, handle));
+	}
+
+	return MirGenericsInstance{hir.span(), std::move(generics)};
+}
 
 MirPointerDeref MirPointerDeref::from_hir(std::shared_ptr<Scope> ctx,
 																					HirPointerDeref hir) {
@@ -777,6 +842,9 @@ std::string MirType::str(const std::shared_ptr<Scope> ctx,
 }
 
 MirStruct MirStruct::from_hir(std::shared_ptr<Scope> ctx, HirStruct hir) {
+	auto generics = MirGenericsParam::from_hir(
+			ctx, hir.generics.value_or(HirGenericsParam::empty()));
+
 	std::vector<MirStructField> fields;
 
 	for (auto &field : hir.fields) {
@@ -788,7 +856,8 @@ MirStruct MirStruct::from_hir(std::shared_ptr<Scope> ctx, HirStruct hir) {
 	}
 
 	auto ident = MirIdent::from_hir(hir.ident);
-	auto struct_ = MirStruct{ctx->getType(MirPath{"void"}, 0), ident, fields};
+	auto struct_ =
+			MirStruct{ctx->getType(MirPath{"void"}, 0), ident, generics, fields};
 
 	struct_.type = ctx->addType(MirPath{ident}, 0, MirType{struct_});
 
@@ -1262,11 +1331,13 @@ public:
 
 class MirFnCall {
 public:
-	MirFnCall(Span span, MirPath path, std::vector<MirExpr> args, TypeHandle type)
-			: span(span), path(path), args(args), type(type) {}
+	MirFnCall(Span span, MirPath path, MirGenericsInstance generics,
+						std::vector<MirExpr> args, TypeHandle type)
+			: span(span), path(path), generics(generics), args(args), type(type) {}
 
 	Span span;
 	MirPath path;
+	MirGenericsInstance generics;
 	std::vector<MirExpr> args;
 	TypeHandle type;
 
@@ -1481,18 +1552,31 @@ public:
 
 class MirFnSignature {
 public:
-	MirFnSignature(TypeHandle type, MirIdent ident,
+	MirFnSignature(TypeHandle type, MirIdent ident, MirGenericsParam generics,
 								 std::vector<MirFnParam> params, TypeHandle ret)
-			: type(type), ident(ident), params(params), ret(ret) {}
+			: type(type), ident(ident), generics(generics), params(params), ret(ret) {
+	}
 
 	TypeHandle type;
 	MirIdent ident;
+	MirGenericsParam generics;
 	std::vector<MirFnParam> params;
 	TypeHandle ret;
 	bool variadic = false;
 
 	static MirFnSignature from_hir(std::shared_ptr<Scope> ctx_, HirExtern hir) {
-		auto ctx = Scope::block(ctx_);
+		auto fallback = HirType::void_();
+		auto ret =
+				ctx_->getType(MirTypeLit::from_hir(ctx_, hir.ret.value_or(fallback)));
+
+		auto ctx = Scope::fn(ctx_, ret);
+
+		auto generics = MirGenericsParam::from_hir(
+				ctx, hir.generics.value_or(HirGenericsParam::empty()));
+
+		for (auto &generic : generics.params) {
+			ctx->addVariableType(generic.first, generic.second);
+		}
 
 		std::vector<MirFnParam> params;
 
@@ -1504,13 +1588,8 @@ public:
 		}
 
 		auto ident = MirIdent::from_hir(hir.ident);
-		// `void`
-		auto fallback = HirType{
-				Span{}, HirPath{Span{}, {TokenIdent{Span{}, "void"}}, std::nullopt}, 0};
-		auto ret =
-				ctx->getType(MirTypeLit::from_hir(ctx, hir.ret.value_or(fallback)));
 
-		auto sig = MirFnSignature{ret, ident, params, ret};
+		auto sig = MirFnSignature{ret, ident, generics, params, ret};
 		sig.variadic = hir.variadic;
 
 		auto shared = std::make_shared<MirFnSignature>(sig);
@@ -1523,8 +1602,10 @@ public:
 	}
 
 	static MirFnSignature from_hir(std::shared_ptr<Scope> ctx, HirFn hir) {
-		auto fallback = HirType{
-				Span{}, HirPath{Span{}, {TokenIdent{Span{}, "void"}}, std::nullopt}, 0};
+		auto generics = MirGenericsParam::from_hir(
+				ctx, hir.generics.value_or(HirGenericsParam::empty()));
+
+		auto fallback = HirType::void_();
 		auto ret =
 				ctx->getType(MirTypeLit::from_hir(ctx, hir.ret.value_or(fallback)));
 
@@ -1536,7 +1617,7 @@ public:
 		}
 
 		auto ident = MirIdent::from_hir(hir.ident);
-		auto sig = MirFnSignature{ret, ident, params, ret};
+		auto sig = MirFnSignature{ret, ident, generics, params, ret};
 
 		auto shared = std::make_shared<MirFnSignature>(sig);
 		auto ty = ctx->addType(MirPath{ident}, 0, MirType{shared});
@@ -1550,22 +1631,21 @@ public:
 
 class MirFn : public MirFnSignature {
 public:
-	MirFn(TypeHandle type, MirIdent ident, std::vector<MirFnParam> params,
-				TypeHandle ret, MirBlock block, MirGenerics generics)
-			: MirFnSignature(type, ident, params, ret), block(block),
-				generics(generics) {}
-	MirFn(MirFnSignature sig, MirBlock block, MirGenerics generics)
-			: MirFnSignature(sig), block(block), generics(generics) {}
+	MirFn(TypeHandle type, MirIdent ident, MirGenericsParam generics,
+				std::vector<MirFnParam> params, TypeHandle ret, MirBlock block)
+			: MirFnSignature(type, ident, generics, params, ret), block(block) {}
+	MirFn(MirFnSignature sig, MirBlock block)
+			: MirFnSignature(sig), block(block) {}
 
 	MirBlock block;
-	MirGenerics generics;
 
 	static MirFn from_hir(std::shared_ptr<Scope> ctx_, HirFn hir) {
 		auto sig = MirFnSignature::from_hir(ctx_, hir);
 		auto ctx = Scope::fn(ctx_, sig.ret);
 
-		auto generics =
-				MirGenerics::from_hir(hir.generics.value_or(HirGenerics::empty()));
+		for (auto &generic : sig.generics.params) {
+			ctx->addVariableType(generic.first, generic.second);
+		}
 
 		for (auto &param : sig.params) {
 			ctx->addVariableType(param.ident, param.type);
@@ -1583,7 +1663,7 @@ public:
 			}
 		}
 
-		return MirFn{sig, block, generics};
+		return MirFn{sig, block};
 	}
 };
 
@@ -1602,6 +1682,9 @@ MirFnCall MirFnCall::from_hir(std::shared_ptr<Scope> ctx, HirFnCall hir) {
 		throw Error(fmt::format("cannot find function `{}` in this scope", path),
 								{{hir.path.span(), "not found in this scope"}});
 	}
+
+	MirGenericsInstance generics = MirGenericsInstance::from_hir(
+			ctx, hir.generics.value_or(HirGenericsInst::empty()));
 
 	if (hir.args.size() != fn->params.size()) {
 		if (!fn->variadic || hir.args.size() < fn->params.size()) {

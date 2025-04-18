@@ -94,17 +94,17 @@ private:
 
 class LlTypeCtx {
 public:
-	LlTypeCtx(TypeCtx &ty, llvm::LLVMContext &ctx, llvm::Module &module)
+	LlTypeCtx(Scope &ty, llvm::LLVMContext &ctx, llvm::Module &module)
 			: ty(ty), ctx(ctx), dataLayout(module.getDataLayout()) {}
 
-	TypeCtx &ty;
+	Scope &ty;
 
 	template <typename T> T *get(TypeHandle handle) {
 		if (auto it = types.find(handle); it != types.end()) {
 			return static_cast<T *>(it->second);
 		}
 
-		auto type = get(ty.get(handle));
+		auto type = get(ty.getType(handle));
 
 		types[handle] = type;
 
