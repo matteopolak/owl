@@ -1509,13 +1509,21 @@ MirFnCall MirFnCall::from_hir(TypeCtx &ctx, HirFnCall hir) {
 		throw std::runtime_error("modules not implemented");
 	}
 
-	auto fnType = ctx.scope->get(path.parts[0]);
+	TypeHandle fnType = [&]() {
+		try {
+			return ctx.scope->get(path.parts[0]);
+		} catch (Error &e) {
+			throw Error(fmt::format("cannot find function `{}` in this scope", path),
+									{{hir.path.span(), "function not found in this scope"}});
+		}
+	}();
+
 	auto maybeFn = ctx.get(fnType);
 	std::shared_ptr<MirFnSignature> fn = maybeFn.fn();
 
 	if (!fn) {
-		throw Error(fmt::format("cannot find function `{}` in this scope", path),
-								{{hir.path.span(), "not found in this scope"}});
+		throw Error(fmt::format("`{}` is not a function", path),
+								{{hir.path.span(), "not a function"}});
 	}
 
 	if (hir.args.size() != fn->params.size()) {

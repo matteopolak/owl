@@ -1,0 +1,22 @@
+extern fn printf(fmt: *char, ...);
+
+struct Point {
+  x: i32,
+  y: i32
+}
+
+fn add(p1: Point, p2: Point): Point {
+  return Point { x: p1.x + p2.x, y: p1.y + p2.y };
+}
+
+fn main(): i32 {
+  let p1 = Point { x: 1, y: 2 };
+  let p2 = Point { x: 3, y: 4 };
+  let p3 = add(p1, p2);
+
+  printf("p1: (%d, %d)\n", p1.x, p1.y);
+  printf("p2: (%d, %d)\n", p2.x, p2.y);
+  printf("p1 + p2: (%d, %d)\n", p3.x, p3.y);
+
+  return 0;
+}

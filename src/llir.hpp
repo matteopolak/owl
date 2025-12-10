@@ -332,10 +332,12 @@ public:
 
 			args = {linker,
 							"/subsystem:console",
-							"msvcrt.lib",
-							"kernel32.lib",
 							"/out:" + output.string() + ".exe",
-							objectFile.string()};
+							objectFile.string(),
+							"msvcrt.lib",
+							"ucrt.lib",
+							"legacy_stdio_definitions.lib",
+							"kernel32.lib"};
 		} else if (llvm::Triple(llvm::sys::getProcessTriple()).isMacOSX()) {
 			linker = "ld";
 			args = {linker,
@@ -453,7 +455,16 @@ private:
 	}
 
 	llvm::Value *lower(std::shared_ptr<LlScope> &scope, const MirFnCall &mir) {
-		llvm::Function *fn = scope->getFn(mir.path);
+		llvm::Function *fn = nullptr;
+		try {
+			fn = scope->getFn(mir.path);
+		} catch (std::runtime_error &) {
+			fn = module.getFunction(mir.path.parts[0].value());
+			if (!fn) {
+				throw std::runtime_error(
+						fmt::format("function `{}` not found", mir.path.parts[0].value()));
+			}
+		}
 
 		std::vector<llvm::Value *> args;
 
